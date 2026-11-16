@@ -136,6 +136,65 @@ public sealed class DnstapSinkExtensionsTests
     }
 
     [TestMethod]
+    public void UnrelatedLogTrafficNeverEntersTheDnstapBatchingQueue()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
+        DnstapSink? captured = null;
+        try
+        {
+            var options = new BatchingOptions
+            {
+                RetryTimeLimit = TimeSpan.Zero,
+                BatchSizeLimit = 1,
+                QueueLimit = 1
+            };
+            var dnsRecord = new global::Dnstap.Dnstap
+            {
+                Type = global::Dnstap.Dnstap.Types.Type.Message,
+                Message = new global::Dnstap.Message
+                {
+                    Type = global::Dnstap.Message.Types.Type.ClientResponse
+                }
+            };
+
+            using (var logger = new LoggerConfiguration()
+                .Destructure.AsScalar<global::Dnstap.Dnstap>()
+                .WriteTo.DnstapFile(path, options, onSinkCreated: sink => captured = sink)
+                .CreateLogger())
+            {
+                for (var i = 0; i < 1000; i++)
+                    logger.Information("Ordinary event {Index}", i);
+
+                logger.ForContext(DnstapEventProperty.Name, dnsRecord)
+                    .Information("DNS response");
+            }
+
+            Assert.IsNotNull(captured);
+            Assert.AreEqual(1L, captured.WrittenRecords);
+            Assert.AreEqual(0L, captured.IgnoredEvents);
+            Assert.AreEqual(0L, captured.DroppedRecords);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void FluentTcpRegistrationExposesDiagnosticSink()
+    {
+        DnstapSink? captured = null;
+        using (var logger = new LoggerConfiguration()
+            .WriteTo.DnstapTcp("127.0.0.1", 53, onSinkCreated: sink => captured = sink)
+            .CreateLogger())
+        {
+            Assert.IsNotNull(captured);
+            Assert.AreEqual(0L, captured.WrittenRecords);
+        }
+    }
+
+    [TestMethod]
     public void LoggerExtensionWritesAValidFileSession()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
