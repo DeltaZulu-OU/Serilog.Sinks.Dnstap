@@ -3,14 +3,12 @@ name: Unit Tests
 on:
   push:
     branches: [main, "feature/**"]
-    paths:
-      - ".github/workflows/unit-tests.yml"
-      - "NuGet.Config"
-      - "global.json"
-      - "*.slnx"
-      - "src/**"
-      - "tests/**"
+    # Skip Markdown-only changes; mixed source/config changes still run CI.
+    paths-ignore:
+      - "**/*.md"
   pull_request:
+    paths-ignore:
+      - "**/*.md"
   workflow_dispatch:
 
 permissions:
