@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
   packages: read
 
 jobs:
@@ -30,16 +30,19 @@ jobs:
         run: |
           dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config --locked-mode
           dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config --locked-mode
-      - name: Commit exact resolved dependencies to main
-        if: github.ref == 'refs/heads/main'
+      - name: Display resolved dependency locks for signed repository commit
         run: |
-          set -euo pipefail
-          git add src/Serilog.Sinks.Dnstap/packages.lock.json tests/Serilog.Sinks.Dnstap.Tests/packages.lock.json benchmarks/Serilog.Sinks.Dnstap.Benchmarks/packages.lock.json
-          if git diff --cached --quiet; then
-            echo 'Dependency lock files are already current'
-            exit 0
-          fi
-          git config user.name 'github-actions[bot]'
-          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git commit -m 'Lock resolved NuGet dependencies'
-          git push origin HEAD:main
+          for path in src/Serilog.Sinks.Dnstap/packages.lock.json tests/Serilog.Sinks.Dnstap.Tests/packages.lock.json benchmarks/Serilog.Sinks.Dnstap.Benchmarks/packages.lock.json; do
+            echo "DNSTAP_LOCK_BEGIN:$path"
+            cat "$path"
+            echo "DNSTAP_LOCK_END:$path"
+          done
+      - name: Preserve resolved dependencies
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: generated-nuget-locks
+          path: |
+            src/Serilog.Sinks.Dnstap/packages.lock.json
+            tests/Serilog.Sinks.Dnstap.Tests/packages.lock.json
+            benchmarks/Serilog.Sinks.Dnstap.Benchmarks/packages.lock.json
+          if-no-files-found: error
