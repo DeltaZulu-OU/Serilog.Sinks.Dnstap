@@ -85,14 +85,14 @@ public static class DnstapSinkExtensions
     }
 
     /// <summary>
-    /// Registers a file-mode DNSTap sink. Existing files are preserved unless overwrite is true.
+    /// Registers a file-mode DNSTap sink. Existing files are replaced by default; set overwrite to false to preserve them.
     /// Serilog's batching queue is used with no automatic retries.
     /// </summary>
     public static LoggerConfiguration DnstapFile(
         this LoggerSinkConfiguration configuration, string path,
         BatchingOptions? batchingOptions = null,
         LogEventLevel restrictedToMinimumLevel = LogEventLevel.Verbose,
-        bool overwrite = false,
+        bool overwrite = true,
         Action<DnstapSink>? onSinkCreated = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);

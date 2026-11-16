@@ -77,17 +77,17 @@ public sealed class DnstapSinkExtensionsTests
     }
 
     [TestMethod]
-    public void ExistingFileIsPreservedByDefault()
+    public void ExistingFileIsPreservedWhenOverwriteDisabled()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
         var original = new byte[] { 0x01, 0x02, 0x03, 0x04 };
         File.WriteAllBytes(path, original);
         try
         {
-            Assert.ThrowsExactly<IOException>(() => DnstapSink.CreateFile(path));
+            Assert.ThrowsExactly<IOException>(() => DnstapSink.CreateFile(path, overwrite: false));
             CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
             Assert.ThrowsExactly<IOException>(() =>
-                new LoggerConfiguration().WriteTo.DnstapFile(path));
+                new LoggerConfiguration().WriteTo.DnstapFile(path, overwrite: false));
             CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
         }
         finally
@@ -97,14 +97,14 @@ public sealed class DnstapSinkExtensionsTests
     }
 
     [TestMethod]
-    public async Task ExplicitOverwriteReplacesExistingFile()
+    public async Task DirectFileFactoryOverwritesByDefault()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
         var original = new byte[] { 0x01, 0x02, 0x03, 0x04 };
         File.WriteAllBytes(path, original);
         try
         {
-            await using (var sink = DnstapSink.CreateFile(path, overwrite: true))
+            await using (var sink = DnstapSink.CreateFile(path))
             {
                 // Opening the file is enough to demonstrate intentional truncation.
             }
@@ -117,14 +117,14 @@ public sealed class DnstapSinkExtensionsTests
     }
 
     [TestMethod]
-    public void FluentOverwriteRequiresExplicitOptIn()
+    public void FluentFileSinkOverwritesByDefault()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
         File.WriteAllBytes(path, new byte[] { 1 });
         try
         {
             using (var logger = new LoggerConfiguration()
-                .WriteTo.DnstapFile(path, overwrite: true).CreateLogger())
+                .WriteTo.DnstapFile(path).CreateLogger())
             {
             }
             Assert.AreEqual(0L, new FileInfo(path).Length);

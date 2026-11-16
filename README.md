@@ -53,7 +53,7 @@ The connection is established on the first eligible DNSTap event, not when const
 
 Replace `.WriteTo.DnstapTcp("127.0.0.1", 6000)` in the example above with `.WriteTo.DnstapFile("dns.fstrm")`.
 
-The file must not already exist; `DnstapFile()` refuses to overwrite it by default. Set `overwrite: true` only when replacement is intentional. The parent directory must exist. Each output file contains one Frame Streams session; the sink does not append or rotate files. File batches are flushed to the stream, but an abrupt shutdown may leave the stream without its final STOP frame, and flushing does not guarantee disk durability.
+`DnstapFile()` replaces any existing destination file by default (`overwrite: true`), so a fresh Frame Streams session can begin after restart even when an external log manager leaves the previous path in place. Set `overwrite: false` to refuse replacement. The default truncates any previous contents; use a unique or externally rotated path when previous captures must be retained. The parent directory must exist. Each output file contains one Frame Streams session; the sink does not append or rotate files. File batches are flushed to the stream, but an abrupt shutdown may leave the stream without its final STOP frame, and flushing does not guarantee disk durability.
 
 ### Batching
 

@@ -122,8 +122,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
 
     /// <summary>Opens a new Frame Streams file, refusing to replace existing data by default.</summary>
     /// <param name="path">Destination file; parent directory must already exist.</param>
-    /// <param name="overwrite">Explicitly allow truncating an existing file. Never appends a second session.</param>
-    public static DnstapSink CreateFile(string path, bool overwrite = false)
+    /// <param name="overwrite">Replace an existing file by default; set false to require a new file. Never appends a second session.</param>
+    public static DnstapSink CreateFile(string path, bool overwrite = true)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var stream = new FileStream(path, overwrite ? FileMode.Create : FileMode.CreateNew, FileAccess.Write,
