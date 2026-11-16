@@ -16,6 +16,65 @@ public sealed class DnstapSinkExtensionsTests
     }
 
     [TestMethod]
+    public void ExistingFileIsPreservedByDefault()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
+        var original = new byte[] { 0x01, 0x02, 0x03, 0x04 };
+        File.WriteAllBytes(path, original);
+        try
+        {
+            Assert.ThrowsExactly<IOException>(() => DnstapSink.CreateFile(path));
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+            Assert.ThrowsExactly<IOException>(() =>
+                new LoggerConfiguration().WriteTo.DnstapFile(path));
+            CollectionAssert.AreEqual(original, File.ReadAllBytes(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public async Task ExplicitOverwriteReplacesExistingFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
+        var original = new byte[] { 0x01, 0x02, 0x03, 0x04 };
+        File.WriteAllBytes(path, original);
+        try
+        {
+            await using (var sink = DnstapSink.CreateFile(path, overwrite: true))
+            {
+                // Opening the file is enough to demonstrate intentional truncation.
+            }
+            Assert.AreEqual(0L, new FileInfo(path).Length);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public void FluentOverwriteRequiresExplicitOptIn()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
+        File.WriteAllBytes(path, new byte[] { 1 });
+        try
+        {
+            using (var logger = new LoggerConfiguration()
+                .WriteTo.DnstapFile(path, overwrite: true).CreateLogger())
+            {
+            }
+            Assert.AreEqual(0L, new FileInfo(path).Length);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public void LoggerExtensionWritesAValidFileSession()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");

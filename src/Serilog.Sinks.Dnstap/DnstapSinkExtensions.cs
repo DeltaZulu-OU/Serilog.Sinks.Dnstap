@@ -15,7 +15,8 @@ public static class DnstapSinkExtensions
     public static LoggerConfiguration DnstapFile(
         this LoggerSinkConfiguration configuration, string path,
         BatchingOptions? batchingOptions = null,
-        LogEventLevel restrictedToMinimumLevel = LogEventLevel.Verbose)
+        LogEventLevel restrictedToMinimumLevel = LogEventLevel.Verbose,
+        bool overwrite = false)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -32,7 +33,7 @@ public static class DnstapSinkExtensions
                 nameof(batchingOptions));
         }
 
-        var sink = DnstapSink.CreateFile(path);
+        var sink = DnstapSink.CreateFile(path, overwrite);
         try
         {
             return configuration.Sink(sink, options, restrictedToMinimumLevel);

@@ -127,6 +127,38 @@ public sealed class DnstapSinkTests
     }
 
     [TestMethod]
+    public async Task DefaultStreamOwnershipLeavesCallerStreamWritable()
+    {
+        using var stream = new MemoryStream();
+        var sink = new DnstapSink(stream);
+        await sink.EmitBatchAsync(new[] { Event(Record()) });
+        await sink.DisposeAsync();
+        Assert.IsTrue(stream.CanWrite);
+        Assert.HasCount(3, ReadFrames(stream.ToArray()));
+    }
+
+    [TestMethod]
+    public async Task ExplicitStreamOwnershipClosesCallerStream()
+    {
+        using var stream = new MemoryStream();
+        var sink = new DnstapSink(stream, leaveOpen: false);
+        await sink.EmitBatchAsync(new[] { Event(Record()) });
+        await sink.DisposeAsync();
+        Assert.IsFalse(stream.CanWrite);
+    }
+
+    [TestMethod]
+    public async Task RepeatedDisposeIsAllowed()
+    {
+        using var stream = new MemoryStream();
+        var sink = new DnstapSink(stream);
+        await sink.EmitBatchAsync(new[] { Event(Record()) });
+        await sink.DisposeAsync();
+        await sink.DisposeAsync();
+        Assert.HasCount(3, ReadFrames(stream.ToArray()));
+    }
+
+    [TestMethod]
     public async Task EmptyBatchIsHarmless()
     {
         using var stream = new MemoryStream();
