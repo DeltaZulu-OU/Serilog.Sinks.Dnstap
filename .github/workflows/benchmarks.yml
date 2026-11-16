@@ -1,6 +1,10 @@
 name: DNSTap benchmarks
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/benchmarks.yml
   workflow_dispatch:
     inputs:
       records:
@@ -34,8 +38,8 @@ jobs:
       - name: Measure file and TCP
         shell: bash
         env:
-          RECORDS: ${{ inputs.records }}
-          BATCH_SIZE: ${{ inputs.batch_size }}
+          RECORDS: ${{ inputs.records || '20000' }}
+          BATCH_SIZE: ${{ inputs.batch_size || '128' }}
         run: |
           set -euo pipefail
           [[ "$RECORDS" =~ ^[0-9]+$ ]] && (( RECORDS >= 1 && RECORDS <= 1000000 ))
