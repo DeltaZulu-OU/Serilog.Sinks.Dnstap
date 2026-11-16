@@ -10,7 +10,7 @@ The current library supports typed `DnstapRecord` events, file-mode Frame Stream
 
 Configure a logger with `WriteTo.DnstapFile(path)` to write a Frame Streams file. The extension registers the sink with Serilog's built-in batching and sets `RetryTimeLimit` to zero to avoid replaying a partially written session. A supplied `BatchingOptions` must also use a zero retry time limit. Dispose the Serilog logger to complete the file session.
 
-The `DnstapRecord` property must contain an ordinary scalar `Dnstap.Dnstap` protobuf instance; other log events are ignored. Call Dnstap.NET's record factory to build records from DNS observation data.
+The `DnstapRecord` property must contain an ordinary scalar `Dnstap.Dnstap` protobuf instance; other log events are ignored. For standard Serilog `ForContext()` calls, register `.Destructure.AsScalar<global::Dnstap.Dnstap>()` on `LoggerConfiguration` before creating the logger, or construct a raw `ScalarValue(record)` when adapting `LogEvent` objects. Serilog otherwise converts arbitrary objects into properties or text, losing the protobuf instance. Call Dnstap.NET's record factory to build records from DNS observation data.
 
 ## Direct batched adapter
 
