@@ -112,6 +112,8 @@ Invalid DNSTap records are rejected without permanently faulting a healthy sessi
 
 Dispose the logger after producing the last event so its batching queue can drain and the Frame Streams session can finish. For the global Serilog logger, prefer `await Log.CloseAndFlushAsync()`. Synchronous shutdown can block while file I/O or the TCP STOP/FINISH exchange completes. Caller-provided file streams have no fixed I/O timeout.
 
+When the sink is registered through `DnstapFile()` or `DnstapTcp()`, completion errors are written to Serilog's `SelfLog` rather than thrown during logger shutdown, so other sinks can finish disposing. Directly constructed sinks propagate completion errors to their callers.
+
 Applications that already own batching and dispatch can use `DnstapSink.CreateFile(path)`, `DnstapSink.CreateTcp(host, port)`, or `await DnstapSink.ConnectTcpAsync(host, port)` directly. Call `EmitBatchAsync()`, drain the application's own queue, then `DisposeAsync()`. Avoid adding a second batching queue.
 
 Stream ownership is explicit: direct constructors leave supplied streams open by default (`leaveOpen: true`), while file and TCP factories own their destinations.
