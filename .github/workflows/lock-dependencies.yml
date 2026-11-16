@@ -1,0 +1,45 @@
+name: Bootstrap NuGet lock files
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/lock-dependencies.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: read
+
+jobs:
+  lock-dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Generate library, test and benchmark lock files
+        run: |
+          dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config --use-lock-file
+          dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config --use-lock-file
+      - name: Verify locked restore
+        run: |
+          dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config --locked-mode
+          dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config --locked-mode
+      - name: Commit exact resolved dependencies to main
+        if: github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          git add src/Serilog.Sinks.Dnstap/packages.lock.json tests/Serilog.Sinks.Dnstap.Tests/packages.lock.json benchmarks/Serilog.Sinks.Dnstap.Benchmarks/packages.lock.json
+          if git diff --cached --quiet; then
+            echo 'Dependency lock files are already current'
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Lock resolved NuGet dependencies'
+          git push origin HEAD:main
