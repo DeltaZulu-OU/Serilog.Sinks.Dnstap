@@ -1,6 +1,10 @@
 name: Validate 0.1.0 release candidate
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/release-candidate.yml
   workflow_dispatch:
 
 permissions:
