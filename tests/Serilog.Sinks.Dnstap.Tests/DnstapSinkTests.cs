@@ -1,4 +1,7 @@
 using System.Buffers.Binary;
+using Serilog;
+using Serilog.Configuration;
+using Serilog.Core;
 using Serilog.Events;
 using Serilog.Parsing;
 
@@ -178,6 +181,73 @@ public sealed class DnstapSinkTests
         Assert.AreEqual(0L, sink.WrittenRecords);
         Assert.AreEqual(2L, sink.DroppedRecords);
         await sink.DisposeAsync();
+    }
+
+    private sealed class FailingCompletionStream : MemoryStream
+    {
+        public bool FailWrites { get; set; }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            FailWrites
+                ? ValueTask.FromException(new IOException("Simulated STOP failure."))
+                : base.WriteAsync(buffer, cancellationToken);
+    }
+
+    private sealed class DisposalObserverSink : ILogEventSink, IDisposable
+    {
+        public bool IsDisposed { get; private set; }
+        public void Emit(LogEvent logEvent) { }
+        public void Dispose() => IsDisposed = true;
+    }
+
+    [TestMethod]
+    public async Task DirectDisposalPropagatesCompletionFailure()
+    {
+        using var stream = new FailingCompletionStream();
+        var sink = new DnstapSink(stream);
+        await sink.EmitBatchAsync(new[] { Event(Record()) });
+        stream.FailWrites = true;
+
+        await Assert.ThrowsExactlyAsync<IOException>(() => sink.DisposeAsync().AsTask());
+        Assert.AreEqual(1L, sink.WrittenRecords);
+    }
+
+    [TestMethod]
+    public async Task FluentDisposalFailureDoesNotSkipSubsequentSink()
+    {
+        using var stream = new FailingCompletionStream();
+        var sink = new DnstapSink(stream) { SuppressTransportExceptions = true };
+        var observer = new DisposalObserverSink();
+        await sink.EmitBatchAsync(new[] { Event(Record()) });
+        stream.FailWrites = true;
+
+        var logger = new LoggerConfiguration()
+            .WriteTo.Sink(sink, new BatchingOptions { RetryTimeLimit = TimeSpan.Zero })
+            .WriteTo.Sink(observer)
+            .CreateLogger();
+
+        logger.Dispose();
+        Assert.IsTrue(observer.IsDisposed, "A failed DNSTap STOP must not skip other sinks.");
+        Assert.AreEqual(1L, sink.WrittenRecords);
+        Assert.AreEqual(0L, sink.FailedBatches);
+    }
+
+    [TestMethod]
+    public async Task MissingNestedMessageDoesNotFaultFollowingRecords()
+    {
+        using var stream = new MemoryStream();
+        await using var sink = new DnstapSink(stream);
+        var malformed = new global::Dnstap.Dnstap
+        {
+            Type = global::Dnstap.Dnstap.Types.Type.Message
+        };
+
+        await sink.EmitBatchAsync(new[] { Event(malformed), Event(Record()) });
+
+        Assert.AreEqual(1L, sink.IgnoredEvents);
+        Assert.AreEqual(1L, sink.WrittenRecords);
+        Assert.AreEqual(0L, sink.FailedBatches);
     }
 
     [TestMethod]
