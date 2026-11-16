@@ -13,6 +13,7 @@ namespace Serilog.Sinks.Dnstap;
 public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDisposable
 {
     private global::Dnstap.DnstapWriter? _writer;
+    private readonly Stream? _fileStream;
     private readonly string? _tcpHost;
     private readonly int _tcpPort;
     private readonly TimeSpan? _operationTimeout;
@@ -70,6 +71,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         bool leaveOpen = true, TimeSpan? operationTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(stream);
+        _fileStream = mode == global::Dnstap.DnstapStreamMode.File ? stream : null;
         _writer = new global::Dnstap.DnstapWriter(stream, mode,
             leaveOpen: leaveOpen, operationTimeout: operationTimeout);
     }
@@ -287,6 +289,25 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                     if (!SuppressTransportExceptions)
                         throw;
                     return;
+                }
+            }
+
+            // Dnstap.NET flushes on STOP, but a long-lived Serilog file sink
+            // must also release FileStream's managed buffer after each batch.
+            // This does not provide an fsync guarantee or append a STOP frame.
+            if (_fileStream is not null && _started)
+            {
+                try
+                {
+                    await _fileStream.FlushAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    _faulted = true;
+                    Interlocked.Increment(ref _failedBatches);
+                    SelfLog.WriteLine("DNSTap file batch flush failed: {0}", ex);
+                    if (!SuppressTransportExceptions)
+                        throw;
                 }
             }
         }
