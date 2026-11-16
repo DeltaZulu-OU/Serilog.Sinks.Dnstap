@@ -8,6 +8,7 @@ namespace Serilog.Sinks.Dnstap;
 /// </summary>
 public static class DnstapEventProperty
 {
+    /// <summary>Serilog property containing a DNSTap protobuf observation.</summary>
     public const string Name = "DnstapRecord";
 
     /// <summary>Finds a raw scalar without coercing structured data or rendered text.</summary>
