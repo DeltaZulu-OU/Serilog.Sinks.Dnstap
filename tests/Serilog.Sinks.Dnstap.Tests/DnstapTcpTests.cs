@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Net;
 using System.Net.Sockets;
+using Serilog;
+using Serilog.Configuration;
 using Serilog.Events;
 using Serilog.Parsing;
 
@@ -106,6 +108,125 @@ public sealed class DnstapTcpTests
         {
             listener.Stop();
         }
+    }
+
+    [TestMethod]
+    public async Task DeferredTcpConfigurationDoesNotConnectBeforeFirstRecord()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            await using (var sink = DnstapSink.CreateTcp("127.0.0.1", port))
+            {
+                await sink.EmitBatchAsync(Array.Empty<LogEvent>());
+            }
+
+            Assert.IsFalse(listener.Pending(), "Empty batches must not open TCP sockets.");
+            using (var logger = new LoggerConfiguration()
+                .WriteTo.DnstapTcp("127.0.0.1", port).CreateLogger())
+            {
+                logger.Information("A normal, unrelated log event");
+            }
+            Assert.IsFalse(listener.Pending(), "Unrelated events must not open TCP sockets.");
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
+    public async Task DeferredTcpSessionNegotiatesOneConnection()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var server = Task.Run(async () =>
+            {
+                using var accepted = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                using var stream = accepted.GetStream();
+                var ready = await ReceiveFrameAsync(stream);
+                Assert.IsTrue(ready.IsControl);
+                Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(ready.Payload));
+                await SendControlAsync(stream, 1);
+
+                var start = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(start.Payload));
+
+                for (var i = 0; i < 2; i++)
+                {
+                    var data = await ReceiveFrameAsync(stream);
+                    Assert.IsFalse(data.IsControl);
+                    Assert.AreEqual(global::Dnstap.Message.Types.Type.ClientResponse,
+                        global::Dnstap.Dnstap.Parser.ParseFrom(data.Payload).Message.Type);
+                }
+
+                var stop = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32BigEndian(stop.Payload));
+                await SendControlAsync(stream, 5);
+            });
+
+            await using (var sink = DnstapSink.CreateTcp("127.0.0.1", port,
+                connectionTimeout: TimeSpan.FromSeconds(5),
+                operationTimeout: TimeSpan.FromSeconds(5)))
+            {
+                Assert.IsFalse(listener.Pending());
+                await sink.EmitBatchAsync(new[] { ResponseEvent() });
+                await sink.EmitBatchAsync(new[] { ResponseEvent() });
+            }
+
+            await server.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.IsFalse(listener.Pending(), "A successful session must not reconnect.");
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
+    public async Task CollectorHandshakeTimeoutIsTerminalWithoutReconnect()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            await using var sink = DnstapSink.CreateTcp("127.0.0.1", port,
+                operationTimeout: TimeSpan.FromMilliseconds(200));
+            var emission = sink.EmitBatchAsync(new[] { ResponseEvent() });
+            using var accepted = await listener.AcceptTcpClientAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            // The TCP collector never sends ACCEPT, so the writer times out.
+            await Assert.ThrowsExactlyAsync<TimeoutException>(() => emission);
+            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+                sink.EmitBatchAsync(new[] { ResponseEvent() }));
+            Assert.IsFalse(listener.Pending(), "A terminal failure must not reconnect.");
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
+    public void FluentTcpConfigurationRejectsReplayAndInvalidTimeouts()
+    {
+        var config = new LoggerConfiguration();
+        Assert.ThrowsExactly<ArgumentException>(() =>
+            config.WriteTo.DnstapTcp("localhost", 53,
+                new BatchingOptions { RetryTimeLimit = TimeSpan.FromSeconds(1) }));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            config.WriteTo.DnstapTcp("localhost", 0));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            config.WriteTo.DnstapTcp("localhost", 53, connectionTimeout: TimeSpan.Zero));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            config.WriteTo.DnstapTcp("localhost", 53, operationTimeout: TimeSpan.Zero));
     }
 
     [TestMethod]
