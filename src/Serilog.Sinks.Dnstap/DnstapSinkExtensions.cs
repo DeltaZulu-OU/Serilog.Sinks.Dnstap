@@ -9,17 +9,19 @@ public static class DnstapSinkExtensions
 {
     /// <summary>
     /// Registers TCP forwarding. The connection starts asynchronously on the first DNSTap record,
-    /// not when constructing the logger. Connection and handshake failures are terminal.
+    /// not when constructing the logger. Failed TCP sessions reopen after a cooldown
+    /// without retrying or replaying any failed records.
     /// </summary>
     public static LoggerConfiguration DnstapTcp(
         this LoggerSinkConfiguration configuration, string host, int port,
         BatchingOptions? batchingOptions = null,
         LogEventLevel restrictedToMinimumLevel = LogEventLevel.Verbose,
-        TimeSpan? connectionTimeout = null, TimeSpan? operationTimeout = null)
+        TimeSpan? connectionTimeout = null, TimeSpan? operationTimeout = null,
+        TimeSpan? reconnectInterval = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var options = ValidateBatching(batchingOptions);
-        var sink = DnstapSink.CreateTcp(host, port, connectionTimeout, operationTimeout);
+        var sink = DnstapSink.CreateTcp(host, port, connectionTimeout, operationTimeout, reconnectInterval);
         try
         {
             return configuration.Conditional(
