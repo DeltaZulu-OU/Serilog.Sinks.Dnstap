@@ -353,7 +353,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             // any unaccounted-for submitted records instead of losing the evidence.
             if (SuppressTransportExceptions)
             {
-                var missing = SubmittedRecords - WrittenRecords - RejectedRecords - DroppedRecords;
+                var missing = SubmittedRecords - WrittenRecords - RejectedRecords - IgnoredEvents - DroppedRecords;
                 if (missing > 0)
                     Interlocked.Add(ref _droppedRecords, missing);
             }
