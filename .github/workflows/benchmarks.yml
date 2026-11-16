@@ -28,7 +28,7 @@ jobs:
       - name: Restore
         env:
           NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
-        run: dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config
+        run: dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config --locked-mode
       - name: Build
         run: dotnet build benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj -c Release --no-restore
       - name: Measure file and TCP
