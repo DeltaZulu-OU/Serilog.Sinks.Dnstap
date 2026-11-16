@@ -190,6 +190,66 @@ public sealed class DnstapTcpTests
     }
 
     [TestMethod]
+    public async Task FluentTcpLoggerWritesWithoutConnectingDuringConstruction()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var server = Task.Run(async () =>
+            {
+                using var accepted = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                using var stream = accepted.GetStream();
+                var ready = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(ready.Payload));
+                await SendControlAsync(stream, 1);
+                var start = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(start.Payload));
+                var data = await ReceiveFrameAsync(stream);
+                Assert.IsFalse(data.IsControl);
+                Assert.AreEqual(global::Dnstap.Message.Types.Type.ClientResponse,
+                    global::Dnstap.Dnstap.Parser.ParseFrom(data.Payload).Message.Type);
+                var stop = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32BigEndian(stop.Payload));
+                await SendControlAsync(stream, 5);
+            });
+
+            var logger = new LoggerConfiguration()
+                .Destructure.AsScalar<global::Dnstap.Dnstap>()
+                .WriteTo.DnstapTcp("127.0.0.1", port,
+                    connectionTimeout: TimeSpan.FromSeconds(5),
+                    operationTimeout: TimeSpan.FromSeconds(5))
+                .CreateLogger();
+            try
+            {
+                Assert.IsFalse(listener.Pending());
+                var record = new global::Dnstap.Dnstap
+                {
+                    Type = global::Dnstap.Dnstap.Types.Type.Message,
+                    Message = new global::Dnstap.Message
+                    {
+                        Type = global::Dnstap.Message.Types.Type.ClientResponse
+                    }
+                };
+                logger.ForContext(DnstapEventProperty.Name, record)
+                    .Information("Observed DNS response");
+            }
+            finally
+            {
+                logger.Dispose();
+            }
+
+            await server.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
     public async Task CollectorHandshakeTimeoutIsTerminalWithoutReconnect()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
