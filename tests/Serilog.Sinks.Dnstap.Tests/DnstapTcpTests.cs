@@ -276,6 +276,76 @@ public sealed class DnstapTcpTests
     }
 
     [TestMethod]
+    public async Task TimedOutCollectorHandshakeRecoversOnNewSessionWithoutReplay()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var collector = Task.Run(async () =>
+            {
+                // First collector session accepts the socket but never accepts
+                // the Frame Streams content type, simulating a stalled collector.
+                using (var stalled = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5)))
+                {
+                    using var stalledStream = stalled.GetStream();
+                    var ready = await ReceiveFrameAsync(stalledStream)
+                        .WaitAsync(TimeSpan.FromSeconds(5));
+                    Assert.IsTrue(ready.IsControl);
+                    Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(ready.Payload));
+                    await Task.Delay(350);
+                }
+
+                // Recovery must use a fresh TCP connection and READY/START.
+                using var recovered = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                using var stream = recovered.GetStream();
+                var nextReady = await ReceiveFrameAsync(stream)
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.IsTrue(nextReady.IsControl);
+                Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(nextReady.Payload));
+                await SendControlAsync(stream, 1);
+                var start = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(start.Payload));
+                var data = await ReceiveFrameAsync(stream);
+                Assert.IsFalse(data.IsControl);
+                var parsed = global::Dnstap.Dnstap.Parser.ParseFrom(data.Payload);
+                Assert.AreEqual(global::Dnstap.Message.Types.Type.ClientResponse,
+                    parsed.Message.Type);
+                var stop = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32BigEndian(stop.Payload));
+                await SendControlAsync(stream, 5);
+            });
+
+            await using var sink = DnstapSink.CreateTcp("127.0.0.1", port,
+                connectionTimeout: TimeSpan.FromSeconds(2),
+                operationTimeout: TimeSpan.FromMilliseconds(120),
+                reconnectInterval: TimeSpan.FromMilliseconds(500));
+            await Assert.ThrowsExactlyAsync<TimeoutException>(() =>
+                sink.EmitBatchAsync(new[] { ResponseEvent() }));
+            await sink.EmitBatchAsync(new[] { ResponseEvent() });
+            Assert.AreEqual(2L, sink.DroppedRecords);
+            Assert.AreEqual(0L, sink.WrittenRecords);
+            Assert.AreEqual(1L, sink.FailedBatches);
+
+            await Task.Delay(550);
+            await sink.EmitBatchAsync(new[] { ResponseEvent() })
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.AreEqual(1L, sink.WrittenRecords);
+            Assert.AreEqual(2L, sink.DroppedRecords);
+            await sink.DisposeAsync();
+            await collector.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsFalse(listener.Pending());
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
     public async Task RefusedConnectionCanRecoverWithoutReplayingFailedEvents()
     {
         var temporary = new TcpListener(IPAddress.Loopback, 0);
