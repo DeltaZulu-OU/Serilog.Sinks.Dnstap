@@ -29,7 +29,8 @@ public sealed class DnstapSinkExtensionsTests
                     Type = global::Dnstap.Message.Types.Type.ClientResponse
                 }
             };
-            using (var logger = new LoggerConfiguration().WriteTo.DnstapFile(path).CreateLogger())
+            using (var logger = new LoggerConfiguration().Destructure.AsScalar<global::Dnstap.Dnstap>()
+                .WriteTo.DnstapFile(path).CreateLogger())
             {
                 logger.ForContext(DnstapEventProperty.Name, record).Information("Observed DNS response");
             }
