@@ -29,6 +29,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private long _failedBatches;
     private long _rejectedRecords;
     private long _droppedRecords;
+    private long _submittedRecords;
     // Mirrors Dnstap.NET 0.1.0's default maximum Frame Streams DATA length.
     private const int MaximumFrameDataLength = 96 * 1024;
     private readonly object _disposeSync = new();
@@ -36,6 +37,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     // Fluent batching must not observe transport failures as retriable batch faults:
     // Serilog 4.3 can discard its entire queue when RetryTimeLimit is zero.
     internal bool SuppressTransportExceptions { get; set; }
+
+    internal void RecordSubmission() => Interlocked.Increment(ref _submittedRecords);
 
     /// <summary>Records whose frames were accepted by the local stream, not acknowledged by a collector.</summary>
     public long WrittenRecords => Interlocked.Read(ref _writtenRecords);
@@ -46,7 +49,10 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     /// <summary>DNSTap records rejected locally before I/O (invalid protobuf or oversized).</summary>
     public long RejectedRecords => Interlocked.Read(ref _rejectedRecords);
 
-    /// <summary>Records not forwarded because a session failed, including subsequent batches.</summary>
+    /// <summary>Eligible records submitted by the fluent Serilog API before native batching.</summary>
+    public long SubmittedRecords => Interlocked.Read(ref _submittedRecords);
+
+    /// <summary>Records not forwarded due to transport faults or inferred native queue drops at shutdown.</summary>
     public long DroppedRecords => Interlocked.Read(ref _droppedRecords);
 
     /// <summary>Batches that failed during connection, handshake or write.</summary>
@@ -341,6 +347,16 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         }
         finally
         {
+            // Serilog 4.3's native bounded batching queue drops on a failed
+            // TryWrite() without calling the target sink or reporting the drop.
+            // After the batching wrapper has drained at logger shutdown, infer
+            // any unaccounted-for submitted records instead of losing the evidence.
+            if (SuppressTransportExceptions)
+            {
+                var missing = SubmittedRecords - WrittenRecords - RejectedRecords - DroppedRecords;
+                if (missing > 0)
+                    Interlocked.Add(ref _droppedRecords, missing);
+            }
             _gate.Release();
         }
     }
