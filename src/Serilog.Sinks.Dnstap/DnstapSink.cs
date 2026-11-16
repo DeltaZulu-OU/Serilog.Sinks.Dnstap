@@ -364,7 +364,10 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         catch (Exception ex)
         {
             SelfLog.WriteLine("DNSTap sink disposal failed: {0}", ex);
-            throw;
+            // Fluent Serilog disposal must not prevent other sinks from flushing.
+            // Direct callers retain the exception so they can handle failed completion.
+            if (!SuppressTransportExceptions)
+                throw;
         }
         finally
         {
