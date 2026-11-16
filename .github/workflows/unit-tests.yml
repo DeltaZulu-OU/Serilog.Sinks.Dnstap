@@ -97,3 +97,31 @@ jobs:
             ${{ runner.temp }}/tcp.jsonl
             ${{ runner.temp }}/tcp.stderr
           if-no-files-found: warn
+
+  benchmark-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Restore and build benchmark harness
+        run: |
+          dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config
+          dotnet build benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj -c Release --no-restore
+      - name: Exercise file and TCP benchmark paths
+        run: |
+          set -euo pipefail
+          dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- file 1000 128 | tee file-smoke.txt
+          dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- tcp 1000 128 | tee tcp-smoke.txt
+      - name: Preserve smoke measurements
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-smoke
+          path: |
+            file-smoke.txt
+            tcp-smoke.txt
+          if-no-files-found: error
