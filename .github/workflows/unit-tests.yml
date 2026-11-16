@@ -39,7 +39,6 @@ jobs:
         run: dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-build --no-restore --output artifacts
 
   package-interop:
-    needs: unit-tests
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
