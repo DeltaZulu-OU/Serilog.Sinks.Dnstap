@@ -182,6 +182,54 @@ public sealed class DnstapSinkExtensionsTests
     }
 
     [TestMethod]
+    public void BoundedNativeQueueLossesAreReconciledAfterLoggerShutdown()
+    {
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
+        DnstapSink? captured = null;
+        const int submitted = 1000;
+        try
+        {
+            var options = new BatchingOptions
+            {
+                RetryTimeLimit = TimeSpan.Zero,
+                BatchSizeLimit = 1,
+                QueueLimit = 1,
+                EagerlyEmitFirstEvent = false,
+                BufferingTimeLimit = TimeSpan.FromMilliseconds(100)
+            };
+            var dnsRecord = new global::Dnstap.Dnstap
+            {
+                Type = global::Dnstap.Dnstap.Types.Type.Message,
+                Message = new global::Dnstap.Message
+                {
+                    Type = global::Dnstap.Message.Types.Type.ClientResponse
+                }
+            };
+
+            using (var logger = new LoggerConfiguration()
+                .Destructure.AsScalar<global::Dnstap.Dnstap>()
+                .WriteTo.DnstapFile(path, options, onSinkCreated: sink => captured = sink)
+                .CreateLogger())
+            {
+                for (var i = 0; i < submitted; i++)
+                    logger.ForContext(DnstapEventProperty.Name, dnsRecord)
+                        .Information("DNS event {Index}", i);
+            }
+
+            Assert.IsNotNull(captured);
+            Assert.AreEqual((long)submitted, captured.SubmittedRecords);
+            Assert.AreEqual((long)submitted,
+                captured.WrittenRecords + captured.RejectedRecords +
+                captured.IgnoredEvents + captured.DroppedRecords);
+        }
+        finally
+        {
+            if (File.Exists(path))
+                File.Delete(path);
+        }
+    }
+
+    [TestMethod]
     public void FluentTcpRegistrationExposesDiagnosticSink()
     {
         DnstapSink? captured = null;
