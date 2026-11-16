@@ -62,6 +62,9 @@ public sealed class DnstapSinkTests
         await sink.DisposeAsync();
         var frames = ReadFrames(stream.ToArray());
         Assert.HasCount(4, frames);
+        Assert.AreEqual(2L, sink.WrittenRecords);
+        Assert.AreEqual(0L, sink.IgnoredEvents);
+        Assert.AreEqual(0L, sink.FailedBatches);
         Assert.AreEqual((byte)0, frames[0][0]);
         Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(frames[0].AsSpan(1, 4))); // START
         Assert.AreEqual((byte)0, frames[3][0]);
@@ -81,6 +84,8 @@ public sealed class DnstapSinkTests
         await sink.EmitBatchAsync(new[] { Event("unrelated"), Event(null) });
         await sink.DisposeAsync();
         Assert.AreEqual(0L, stream.Length);
+        Assert.AreEqual(2L, sink.IgnoredEvents);
+        Assert.AreEqual(0L, sink.WrittenRecords);
     }
 
     [TestMethod]
@@ -95,6 +100,8 @@ public sealed class DnstapSinkTests
         await sink.EmitBatchAsync(new[] { Event(Record()) });
         await sink.DisposeAsync();
         Assert.HasCount(3, ReadFrames(stream.ToArray()));
+        Assert.AreEqual(1L, sink.IgnoredEvents);
+        Assert.AreEqual(1L, sink.WrittenRecords);
     }
 
     private sealed class FailedOutputStream : MemoryStream
@@ -113,6 +120,8 @@ public sealed class DnstapSinkTests
             sink.EmitBatchAsync(new[] { Event(Record()) }));
         await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
             sink.EmitBatchAsync(new[] { Event(Record()) }));
+        Assert.AreEqual(1L, sink.FailedBatches);
+        Assert.AreEqual(0L, sink.WrittenRecords);
         await sink.DisposeAsync();
     }
 
@@ -145,6 +154,65 @@ public sealed class DnstapSinkTests
         await sink.EmitBatchAsync(new[] { Event(Record()) });
         await sink.DisposeAsync();
         Assert.IsFalse(stream.CanWrite);
+    }
+
+    private sealed class PausedWriteStream : MemoryStream
+    {
+        private readonly TaskCompletionSource _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _resume = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _paused;
+
+        public Task Entered => _entered.Task;
+        public void Resume() => _resume.TrySetResult();
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default)
+        {
+            if (Interlocked.Exchange(ref _paused, 1) == 0)
+            {
+                _entered.TrySetResult();
+                await _resume.Task.WaitAsync(cancellationToken);
+            }
+
+            await base.WriteAsync(buffer, cancellationToken);
+        }
+    }
+
+    [TestMethod]
+    public async Task ConcurrentDisposalWaitsForActiveWriteAndProducesOneStop()
+    {
+        using var stream = new PausedWriteStream();
+        var sink = new DnstapSink(stream);
+        var emission = sink.EmitBatchAsync(new[] { Event(Record()) });
+        try
+        {
+            await stream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            var firstDisposal = sink.DisposeAsync().AsTask();
+            var secondDisposal = sink.DisposeAsync().AsTask();
+            Assert.IsFalse(firstDisposal.IsCompleted);
+            Assert.IsFalse(secondDisposal.IsCompleted);
+            stream.Resume();
+            await emission.WaitAsync(TimeSpan.FromSeconds(5));
+            await Task.WhenAll(firstDisposal, secondDisposal).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.HasCount(3, ReadFrames(stream.ToArray()));
+            Assert.AreEqual(1L, sink.WrittenRecords);
+        }
+        finally
+        {
+            stream.Resume();
+            await sink.DisposeAsync();
+        }
+    }
+
+    [TestMethod]
+    public async Task ConcurrentBatchesAreSerializedAndCounted()
+    {
+        using var stream = new MemoryStream();
+        await using var sink = new DnstapSink(stream);
+        await Task.WhenAll(Enumerable.Range(0, 4)
+            .Select(_ => sink.EmitBatchAsync(new[] { Event(Record()) })));
+        Assert.AreEqual(4L, sink.WrittenRecords);
+        Assert.AreEqual(0L, sink.FailedBatches);
     }
 
     [TestMethod]
