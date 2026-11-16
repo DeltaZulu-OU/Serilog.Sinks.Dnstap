@@ -8,6 +8,14 @@
     <Version>0.1.0</Version>
     <Authors>DeltaZulu OÜ</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/DeltaZulu-OU/Serilog.Sinks.Dnstap</PackageProjectUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>serilog;dnstap;dns;framestreams;logging</PackageTags>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DebugType>embedded</DebugType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <ContinuousIntegrationBuild Condition="'$(GITHUB_ACTIONS)' == 'true'">true</ContinuousIntegrationBuild>
     <RepositoryUrl>https://github.com/DeltaZulu-OU/Serilog.Sinks.Dnstap</RepositoryUrl>
     <Description>Serilog sink for DNS telemetry encoded using the DNSTap protocol.</Description>
     <IsPackable>true</IsPackable>
@@ -15,5 +23,6 @@
   <ItemGroup>
     <PackageReference Include="Serilog" Version="4.3.0" />
     <PackageReference Include="Dnstap.NET" Version="0.1.0" />
+    <None Include="../../README.md" Pack="true" PackagePath="/" />
   </ItemGroup>
 </Project>
