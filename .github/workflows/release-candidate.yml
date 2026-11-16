@@ -1,0 +1,101 @@
+name: Validate 0.1.0 release candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  unit-tests:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    env:
+      NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Restore locked dependencies
+        run: dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config --locked-mode
+      - name: Build and test
+        run: |
+          dotnet build Serilog.Sinks.Dnstap.slnx -c Release --no-restore
+          dotnet test tests/Serilog.Sinks.Dnstap.Tests/Serilog.Sinks.Dnstap.Tests.csproj -c Release --no-build --no-restore
+
+  verified-package:
+    needs: unit-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.25.6"
+      - name: Validate exact release-candidate version and source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REF" = refs/heads/main
+          python3 -c 'import xml.etree.ElementTree as ET; p=ET.parse("src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj"); v=[x.text for x in p.iter("Version")]; assert v==["0.1.0"], "Expected pre-release candidate version 0.1.0"'
+      - name: Build and validate exact candidate package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet restore src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj --configfile NuGet.Config --locked-mode
+          dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-restore --output artifacts/packages /p:RepositoryCommit="$GITHUB_SHA"
+          python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
+      - name: Restore isolated package consumer
+        run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --configfile tests/PackageConsumer/NuGet.Config --packages "${{ runner.temp }}/release-candidate-restore" --no-http-cache
+      - name: Install independent DNSTap decoder
+        run: GOBIN="${{ runner.temp }}/dnstap-tools" go install github.com/dnstap/golang-dnstap/dnstap@ebb538e7d351a58861a8f348491828214a1d8db2
+      - name: Verify packaged file and TCP sessions independently
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet run --project tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore -- file "${{ runner.temp }}/candidate.fstrm"
+          "${{ runner.temp }}/dnstap-tools/dnstap" -j -r "${{ runner.temp }}/candidate.fstrm" > "${{ runner.temp }}/file.jsonl"
+          jq -s -e 'length == 1 and .[0].type == "MESSAGE" and .[0].message.type == "CLIENT_QUERY"' "${{ runner.temp }}/file.jsonl"
+          "${{ runner.temp }}/dnstap-tools/dnstap" -j -l 127.0.0.1:16054 > "${{ runner.temp }}/tcp.jsonl" 2> "${{ runner.temp }}/tcp.stderr" &
+          reader=$!
+          trap 'kill "$reader" 2>/dev/null || true' EXIT
+          ready=0
+          for i in {1..100}; do
+            if ss -ltn | grep -qE ':16054[[:space:]]'; then ready=1; break; fi
+            kill -0 "$reader" || { cat "${{ runner.temp }}/tcp.stderr"; exit 1; }
+            sleep 0.1
+          done
+          [[ "$ready" -eq 1 ]]
+          dotnet run --project tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore -- tcp 127.0.0.1 16054
+          for i in {1..100}; do
+            if [[ "$(wc -l < "${{ runner.temp }}/tcp.jsonl")" -ge 1 ]]; then break; fi
+            sleep 0.1
+          done
+          jq -s -e 'length == 1 and .[0].type == "MESSAGE" and .[0].message.type == "CLIENT_QUERY"' "${{ runner.temp }}/tcp.jsonl"
+      - name: Produce candidate digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd artifacts/packages
+          sha256sum Serilog.Sinks.Dnstap.0.1.0.nupkg > SHA256SUMS
+          sha256sum --check SHA256SUMS
+      - name: Preserve verified release candidate without publishing
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: validated-serilog-dnstap-0.1.0
+          path: |
+            artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
+            artifacts/packages/SHA256SUMS
+          if-no-files-found: error
