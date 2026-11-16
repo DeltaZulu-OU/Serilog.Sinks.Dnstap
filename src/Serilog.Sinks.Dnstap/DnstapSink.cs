@@ -217,8 +217,10 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         }
     }
 
+    /// <inheritdoc />
     public Task OnEmptyBatchAsync() => Task.CompletedTask;
 
+    /// <inheritdoc />
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     /// <summary>
