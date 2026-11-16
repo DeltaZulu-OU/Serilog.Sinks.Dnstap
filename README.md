@@ -1,6 +1,6 @@
 # Serilog.Sinks.Dnstap
 
-A [Serilog](https://serilog.net/) sink for forwarding DNS observations in the [DNSTap](https://dnstap.info/) format. It uses [Dnstap.NET](https://github.com/DeltaZulu-OU/Dnstap.NET) to encode protobuf messages and write [Frame Streams](https://github.com/farsightsec/fstrm) to a file or a TCP collector.
+A [Serilog](https://serilog.net/) sink for forwarding DNS observations in the [DNSTap](https://dnstap.info/) format. It uses [Dnstap.NET](https://github.com/DeltaZulu-OU/Dnstap.NET) to encode protobuf messages and send [Frame Streams](https://github.com/farsightsec/fstrm) to a TCP collector, with file output available for local capture.
 
 **Availability:** This package is intended for internal evaluation and source builds. It is not yet distributed for general package consumption. The `Dnstap.NET` dependency is currently hosted on an authenticated DeltaZulu GitHub Packages feed; cloning this repository alone does not remove that restore requirement.
 
@@ -47,7 +47,7 @@ logger.ForContext(DnstapEventProperty.Name, dnsRecord)
 await ((IAsyncDisposable)logger).DisposeAsync();
 ```
 
-The connection is established on the first eligible DNSTap event, not when constructing the logger. The sink initiates a Frame Streams handshake. After a transport failure, a configured TCP sink may establish a **new** session once the reconnect interval has elapsed (five seconds by default). It never replays events that failed or arrived during the outage. An immediately connected or caller-supplied stream cannot reconnect automatically. Configure `connectionTimeout`, `operationTimeout`, and `reconnectInterval` on `DnstapTcp()` when necessary.
+The connection is established on the first eligible DNSTap event, not when constructing the logger. The sink initiates a Frame Streams handshake. After a transport failure, a configured TCP sink may establish a **new** session once the reconnect interval has elapsed (five seconds by default). A new eligible record triggers the next connection attempt; the sink does not reconnect in the background when idle. It never replays events that failed or arrived during the outage. An immediately connected or caller-supplied stream cannot reconnect automatically. Configure `connectionTimeout`, `operationTimeout`, and `reconnectInterval` on `DnstapTcp()` when necessary.
 
 ### Write to a file
 
@@ -121,12 +121,12 @@ Stream ownership is explicit: direct constructors leave supplied streams open by
 Clone this repository, provide authorized credentials for the `deltazulu-github` source defined in `NuGet.Config`, then run:
 
 ```shell
-dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config
+dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config --locked-mode
 dotnet build Serilog.Sinks.Dnstap.slnx -c Release --no-restore
 dotnet test tests/Serilog.Sinks.Dnstap.Tests/Serilog.Sinks.Dnstap.Tests.csproj -c Release --no-restore
 ```
 
-A token must have `read:packages` permission and access to the Dnstap.NET package. NuGet authentication is environment-specific; do not commit secrets or credentials to configuration files. See [Dnstap.NET](https://github.com/DeltaZulu-OU/Dnstap.NET) for the protocol library.
+A token must have `read:packages` permission and access to the Dnstap.NET package. NuGet authentication is environment-specific; do not commit secrets or credentials to configuration files. Dependency versions and hashes are tracked in committed `packages.lock.json` files; use `--locked-mode` for reproducible restores. The manual [release-candidate workflow](.github/workflows/release-candidate.yml) verifies the candidate package and independent TCP/file interoperability, but does **not** publish packages or create a release. See [Dnstap.NET](https://github.com/DeltaZulu-OU/Dnstap.NET) for the protocol library.
 
 ## License
 
