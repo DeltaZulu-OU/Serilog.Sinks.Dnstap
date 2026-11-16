@@ -1,5 +1,6 @@
 using System.Net.Sockets;
 using Serilog.Core;
+using Serilog.Debugging;
 using Serilog.Events;
 
 namespace Serilog.Sinks.Dnstap;
@@ -20,6 +21,20 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private int _disposed;
     private bool _started;
     private bool _faulted;
+    private long _writtenRecords;
+    private long _ignoredEvents;
+    private long _failedBatches;
+    private readonly object _disposeSync = new();
+    private Task? _disposeTask;
+
+    /// <summary>Records whose frames were accepted by the local stream, not acknowledged by a collector.</summary>
+    public long WrittenRecords => Interlocked.Read(ref _writtenRecords);
+
+    /// <summary>Log events without a supported DNSTap record; never forwarded.</summary>
+    public long IgnoredEvents => Interlocked.Read(ref _ignoredEvents);
+
+    /// <summary>Batches that failed during connection, handshake or write.</summary>
+    public long FailedBatches => Interlocked.Read(ref _failedBatches);
 
     /// <param name="stream">Writable destination for a complete Frame Streams file session.</param>
     /// <param name="leaveOpen">Whether the supplied stream remains open after sink disposal.</param>
@@ -165,6 +180,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             {
                 if (!DnstapEventProperty.TryGetRecord(logEvent, out var record))
                 {
+                    Interlocked.Increment(ref _ignoredEvents);
                     continue;
                 }
 
@@ -183,10 +199,14 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                     }
 
                     await _writer.WriteAsync(record!).ConfigureAwait(false);
+                    Interlocked.Increment(ref _writtenRecords);
                 }
-                catch
+                catch (Exception ex)
                 {
                     _faulted = true;
+                    Interlocked.Increment(ref _failedBatches);
+                    SelfLog.WriteLine("DNSTap sink entered terminal failure after {0} locally written records: {1}",
+                        WrittenRecords, ex);
                     throw;
                 }
             }
@@ -202,17 +222,22 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
     /// <summary>
-    /// Completes a healthy Frame Streams session before releasing an owned stream.
-    /// File-mode operations are not time-bounded; callers must supply a responsive stream.
-    /// Concurrent calls to DisposeAsync are safe but subsequent calls may return early.
+    /// Completes the Frame Streams session and releases owned resources.
+    /// Concurrent disposals await the same operation, including any failure.
+    /// File-mode I/O may stall indefinitely when the supplied stream does not make progress.
     /// </summary>
-    public async ValueTask DisposeAsync()
+    public ValueTask DisposeAsync()
     {
-        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        lock (_disposeSync)
         {
-            return;
+            _disposeTask ??= DisposeCoreAsync();
+            return new ValueTask(_disposeTask);
         }
+    }
 
+    private async Task DisposeCoreAsync()
+    {
+        Interlocked.Exchange(ref _disposed, 1);
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -220,6 +245,11 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             {
                 await _writer.DisposeAsync().ConfigureAwait(false);
             }
+        }
+        catch (Exception ex)
+        {
+            SelfLog.WriteLine("DNSTap sink disposal failed: {0}", ex);
+            throw;
         }
         finally
         {
