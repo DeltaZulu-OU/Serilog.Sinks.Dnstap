@@ -70,7 +70,7 @@ var batching = new BatchingOptions
 
 var logger = new LoggerConfiguration()
     .Destructure.AsScalar<global::Dnstap.Dnstap>()
-    .WriteTo.DnstapFile("dns.fstrm", batchingOptions: batching)
+    .WriteTo.DnstapTcp("127.0.0.1", 6000, batchingOptions: batching)
     .CreateLogger();
 ```
 
