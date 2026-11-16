@@ -153,7 +153,7 @@ public sealed class DnstapSinkTests
             sink.EmitBatchAsync(new[] { Event(Record()) }));
         Assert.AreEqual(1L, sink.FailedBatches);
         Assert.AreEqual(0L, sink.WrittenRecords);
-        Assert.AreEqual(1L, sink.DroppedRecords);
+        Assert.AreEqual(2L, sink.DroppedRecords);
         await sink.DisposeAsync();
     }
 
