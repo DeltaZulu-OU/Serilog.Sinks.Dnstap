@@ -22,9 +22,10 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore with authenticated DeltaZulu GitHub Packages feed
@@ -44,11 +45,11 @@ jobs:
     env:
       NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
         with:
           go-version: "1.25.6"
       - name: Build validated NuGet candidate
@@ -88,7 +89,7 @@ jobs:
           jq -s -e 'length == 1 and .[0].type == "MESSAGE" and .[0].identity == "serilog-dnstap-consumer" and .[0].message.type == "CLIENT_QUERY" and .[0].message.socket_protocol == "UDP" and .[0].message.query_address == "192.0.2.10" and .[0].message.response_port == 53 and (.[0].message.query_message | contains("example.com."))' "${{ runner.temp }}/tcp.jsonl"
       - name: Preserve independent interoperability evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: serilog-dnstap-interop
           path: |
@@ -104,8 +105,8 @@ jobs:
     env:
       NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-dotnet@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
           global-json-file: global.json
       - name: Restore and build benchmark harness
@@ -118,7 +119,7 @@ jobs:
           dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- file 1000 128 | tee file-smoke.txt
           dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- tcp 1000 128 | tee tcp-smoke.txt
       - name: Preserve smoke measurements
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: benchmark-smoke
           path: |
