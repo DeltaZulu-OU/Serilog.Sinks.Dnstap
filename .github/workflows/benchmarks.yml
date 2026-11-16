@@ -1,0 +1,52 @@
+name: DNSTap benchmarks
+
+on:
+  workflow_dispatch:
+    inputs:
+      records:
+        description: "Records per run"
+        required: true
+        default: "20000"
+      batch_size:
+        description: "Records per batch"
+        required: true
+        default: "128"
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
+        with:
+          global-json-file: global.json
+      - name: Restore
+        env:
+          NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
+        run: dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config
+      - name: Build
+        run: dotnet build benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj -c Release --no-restore
+      - name: Measure file and TCP
+        shell: bash
+        env:
+          RECORDS: ${{ inputs.records }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+        run: |
+          set -euo pipefail
+          [[ "$RECORDS" =~ ^[0-9]+$ ]] && (( RECORDS >= 1 && RECORDS <= 1000000 ))
+          [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]] && (( BATCH_SIZE >= 1 && BATCH_SIZE <= 10000 ))
+          dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- file "$RECORDS" "$BATCH_SIZE" | tee file-results.txt
+          dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- tcp "$RECORDS" "$BATCH_SIZE" | tee tcp-results.txt
+      - name: Preserve results
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-results
+          path: |
+            file-results.txt
+            tcp-results.txt
+          if-no-files-found: error
