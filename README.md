@@ -8,15 +8,15 @@ The current library supports typed `DnstapRecord` events, file-mode Frame Stream
 
 ## Serilog integration
 
-Configure a logger with `WriteTo.DnstapFile(path)` to write a Frame Streams file. The extension registers the sink with Serilog's built-in batching and sets `RetryTimeLimit` to zero to avoid replaying a partially written session. A supplied `BatchingOptions` must also use a zero retry time limit. Dispose the Serilog logger to complete the file session.
+Configure a logger with `WriteTo.DnstapFile(path)` to write a new Frame Streams file. Existing files are preserved: the default creation mode fails if the path already exists. To explicitly replace an existing file, set `overwrite: true`. The sink does not append another session to an existing capture. Parent directories must exist. The extension registers the sink with Serilog's built-in batching and sets `RetryTimeLimit` to zero to avoid replaying a partially written session. A supplied `BatchingOptions` must also use a zero retry time limit. Dispose the Serilog logger to complete the file session.
 
 The `DnstapRecord` property must contain an ordinary scalar `Dnstap.Dnstap` protobuf instance; other log events are ignored. For standard Serilog `ForContext()` calls, register `.Destructure.AsScalar<global::Dnstap.Dnstap>()` on `LoggerConfiguration` before creating the logger, or construct a raw `ScalarValue(record)` when adapting `LogEvent` objects. Serilog otherwise converts arbitrary objects into properties or text, losing the protobuf instance. Call Dnstap.NET's record factory to build records from DNS observation data.
 
 ## Direct batched adapter
 
-`DnstapSink.CreateFile(path)` opens an owned file destination. `DnstapSink.ConnectTcpAsync(host, port)` connects once to a duplex TCP collector. Both implement `IBatchedLogEventSink`, suitable for consumers such as LogForwarderApp with an existing dispatcher. Call `EmitBatchAsync()` directly and dispose after draining. Do not wrap the direct adapter in a second batching queue.
+`DnstapSink.CreateFile(path, overwrite: false)` opens an owned file destination without truncating existing files. `DnstapSink.ConnectTcpAsync(host, port)` connects once to a duplex TCP collector. Both implement `IBatchedLogEventSink`, suitable for consumers such as LogForwarderApp with an existing dispatcher. Call `EmitBatchAsync()` directly and dispose after draining. Do not wrap the direct adapter in a second batching queue.
 
-Each destination hosts one Frame Streams session. Session failures are terminal, so callers should report and account for lost records rather than automatically replay. TCP is plaintext: use only a trusted or separately protected transport. Successful stream writes do not constitute per-record collector acknowledgments. Disposal completes the STOP handshake for a healthy session; it may block on unresponsive streams.
+Each destination hosts one Frame Streams session. Session failures are terminal, so callers should report and account for lost records rather than automatically replay. TCP is plaintext: use only a trusted or separately protected transport. Successful stream writes do not constitute per-record collector acknowledgments. Disposal completes the STOP handshake for a healthy session; it may block on unresponsive streams. Supplied streams remain open by default (`leaveOpen: true`); file and TCP factories own their streams. File-mode I/O and disposal currently have no timeout guarantee, so use a responsive destination and ensure the caller drains its dispatch queue before disposing.
 
 ## Dependency restore
 

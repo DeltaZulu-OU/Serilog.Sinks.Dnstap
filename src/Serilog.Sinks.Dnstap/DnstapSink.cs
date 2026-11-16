@@ -5,7 +5,7 @@ using Serilog.Events;
 namespace Serilog.Sinks.Dnstap;
 
 /// <summary>
-/// Writes DNSTap protobuf observations as Frame Streams records to one file-mode stream.
+/// Writes DNSTap protobuf observations as Frame Streams records to one session.
 /// The caller or Serilog batching layer owns batch timing; this sink has no additional queue.
 /// </summary>
 public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDisposable
@@ -32,11 +32,13 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             leaveOpen: leaveOpen, operationTimeout: operationTimeout);
     }
 
-    /// <summary>Opens a new Frame Streams file. The sink owns the file handle.</summary>
-    public static DnstapSink CreateFile(string path)
+    /// <summary>Opens a new Frame Streams file, refusing to replace existing data by default.</summary>
+    /// <param name="path">Destination file; parent directory must already exist.</param>
+    /// <param name="overwrite">Explicitly allow truncating an existing file. Never appends a second session.</param>
+    public static DnstapSink CreateFile(string path, bool overwrite = false)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        var stream = new FileStream(path, FileMode.Create, FileAccess.Write,
+        var stream = new FileStream(path, overwrite ? FileMode.Create : FileMode.CreateNew, FileAccess.Write,
             FileShare.Read, bufferSize: 65536, options: FileOptions.Asynchronous);
         try
         {
@@ -128,7 +130,11 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
 
     public void Dispose() => DisposeAsync().AsTask().GetAwaiter().GetResult();
 
-    /// <summary>Completes a healthy Frame Streams session and releases the owned stream.</summary>
+    /// <summary>
+    /// Completes a healthy Frame Streams session before releasing an owned stream.
+    /// File-mode operations are not time-bounded; callers must supply a responsive stream.
+    /// Concurrent calls to DisposeAsync are safe but subsequent calls may return early.
+    /// </summary>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
