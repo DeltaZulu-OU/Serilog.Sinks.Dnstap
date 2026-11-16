@@ -104,6 +104,37 @@ public sealed class DnstapSinkTests
         Assert.AreEqual(1L, sink.WrittenRecords);
     }
 
+    [TestMethod]
+    public async Task UninitializedRecordIsRejectedWithoutFaultingSession()
+    {
+        using var stream = new MemoryStream();
+        await using var sink = new DnstapSink(stream);
+        var uninitialized = new global::Dnstap.Dnstap
+        {
+            Message = new global::Dnstap.Message
+            {
+                Type = global::Dnstap.Message.Types.Type.ClientResponse
+            }
+        };
+        await sink.EmitBatchAsync(new[] { Event(uninitialized), Event(Record()) });
+        Assert.AreEqual(1L, sink.RejectedRecords);
+        Assert.AreEqual(1L, sink.WrittenRecords);
+        Assert.AreEqual(0L, sink.FailedBatches);
+    }
+
+    [TestMethod]
+    public async Task OversizedRecordIsRejectedWithoutFaultingSession()
+    {
+        using var stream = new MemoryStream();
+        await using var sink = new DnstapSink(stream);
+        var oversized = Record();
+        oversized.Message.QueryMessage = Google.Protobuf.ByteString.CopyFrom(new byte[100_000]);
+        await sink.EmitBatchAsync(new[] { Event(oversized), Event(Record()) });
+        Assert.AreEqual(1L, sink.RejectedRecords);
+        Assert.AreEqual(1L, sink.WrittenRecords);
+        Assert.AreEqual(0L, sink.FailedBatches);
+    }
+
     private sealed class FailedOutputStream : MemoryStream
     {
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
@@ -122,6 +153,7 @@ public sealed class DnstapSinkTests
             sink.EmitBatchAsync(new[] { Event(Record()) }));
         Assert.AreEqual(1L, sink.FailedBatches);
         Assert.AreEqual(0L, sink.WrittenRecords);
+        Assert.AreEqual(1L, sink.DroppedRecords);
         await sink.DisposeAsync();
     }
 
