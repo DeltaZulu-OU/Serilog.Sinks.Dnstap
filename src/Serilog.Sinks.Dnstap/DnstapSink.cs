@@ -10,7 +10,12 @@ namespace Serilog.Sinks.Dnstap;
 /// </summary>
 public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDisposable
 {
-    private readonly global::Dnstap.DnstapWriter _writer;
+    private global::Dnstap.DnstapWriter? _writer;
+    private readonly string? _tcpHost;
+    private readonly int _tcpPort;
+    private readonly TimeSpan? _operationTimeout;
+    private readonly TimeSpan _connectionTimeout;
+    private static readonly TimeSpan DefaultConnectionTimeout = TimeSpan.FromSeconds(10);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private int _disposed;
     private bool _started;
@@ -30,6 +35,43 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         ArgumentNullException.ThrowIfNull(stream);
         _writer = new global::Dnstap.DnstapWriter(stream, mode,
             leaveOpen: leaveOpen, operationTimeout: operationTimeout);
+    }
+
+    private DnstapSink(string host, int port, TimeSpan connectionTimeout, TimeSpan? operationTimeout)
+    {
+        _tcpHost = host;
+        _tcpPort = port;
+        _connectionTimeout = connectionTimeout;
+        _operationTimeout = operationTimeout;
+    }
+
+    private static void ValidateTcpEndpoint(string host, int port, TimeSpan connectionTimeout, TimeSpan? operationTimeout)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+        ArgumentOutOfRangeException.ThrowIfLessThan(port, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
+        if (connectionTimeout <= TimeSpan.Zero || connectionTimeout.TotalMilliseconds > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(connectionTimeout));
+        }
+
+        if (operationTimeout is { } timeout &&
+            (timeout <= TimeSpan.Zero || timeout.TotalMilliseconds > int.MaxValue))
+        {
+            throw new ArgumentOutOfRangeException(nameof(operationTimeout));
+        }
+    }
+
+    /// <summary>
+    /// Configures one TCP session, connecting on the first eligible event rather than
+    /// during logger construction. No implicit reconnection or batch replay is performed.
+    /// </summary>
+    public static DnstapSink CreateTcp(string host, int port,
+        TimeSpan? connectionTimeout = null, TimeSpan? operationTimeout = null)
+    {
+        var deadline = connectionTimeout ?? DefaultConnectionTimeout;
+        ValidateTcpEndpoint(host, port, deadline, operationTimeout);
+        return new DnstapSink(host, port, deadline, operationTimeout);
     }
 
     /// <summary>Opens a new Frame Streams file, refusing to replace existing data by default.</summary>
@@ -57,18 +99,41 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     /// </summary>
     public static async Task<DnstapSink> ConnectTcpAsync(
         string host, int port, TimeSpan? operationTimeout = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        TimeSpan? connectionTimeout = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(host);
-        ArgumentOutOfRangeException.ThrowIfLessThan(port, 1);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
+        var deadline = connectionTimeout ?? DefaultConnectionTimeout;
+        ValidateTcpEndpoint(host, port, deadline, operationTimeout);
+        var writer = await OpenTcpWriterAsync(host, port, deadline, operationTimeout, cancellationToken)
+            .ConfigureAwait(false);
+        return new DnstapSink(writer);
+    }
 
+    private DnstapSink(global::Dnstap.DnstapWriter writer) => _writer = writer;
+
+    private static async Task<global::Dnstap.DnstapWriter> OpenTcpWriterAsync(
+        string host, int port, TimeSpan connectionTimeout,
+        TimeSpan? operationTimeout, CancellationToken cancellationToken = default)
+    {
+        using var timeout = new CancellationTokenSource(connectionTimeout);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            timeout.Token, cancellationToken);
         var client = new TcpClient();
         try
         {
-            await client.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
-            // NetworkStream.Dispose closes the underlying socket; the sink owns the stream.
-            return new DnstapSink(client.GetStream(), global::Dnstap.DnstapStreamMode.Duplex,
+            try
+            {
+                await client.ConnectAsync(host, port, linked.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException ex) when (
+                timeout.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException("DNSTap TCP connection timed out.", ex);
+            }
+
+            // The owned NetworkStream closes the socket when the writer is disposed.
+            return new global::Dnstap.DnstapWriter(client.GetStream(),
+                global::Dnstap.DnstapStreamMode.Duplex,
                 leaveOpen: false, operationTimeout: operationTimeout);
         }
         catch
@@ -105,6 +170,12 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
 
                 try
                 {
+                    if (_writer is null)
+                    {
+                        _writer = await OpenTcpWriterAsync(_tcpHost!, _tcpPort,
+                            _connectionTimeout, _operationTimeout).ConfigureAwait(false);
+                    }
+
                     if (!_started)
                     {
                         await _writer.StartAsync().ConfigureAwait(false);
@@ -145,7 +216,10 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
-            await _writer.DisposeAsync().ConfigureAwait(false);
+            if (_writer is not null)
+            {
+                await _writer.DisposeAsync().ConfigureAwait(false);
+            }
         }
         finally
         {
