@@ -339,6 +339,87 @@ public sealed class DnstapTcpTests
     }
 
     [TestMethod]
+    public async Task FluentTcpSinkRecoversAfterRefusalWithoutBatchReplay()
+    {
+        var reservation = new TcpListener(IPAddress.Loopback, 0);
+        reservation.Start();
+        var port = ((IPEndPoint)reservation.LocalEndpoint).Port;
+        reservation.Stop();
+
+        DnstapSink? captured = null;
+        var options = new BatchingOptions
+        {
+            RetryTimeLimit = TimeSpan.Zero,
+            BatchSizeLimit = 1,
+            BufferingTimeLimit = TimeSpan.FromMilliseconds(30)
+        };
+        var logger = new LoggerConfiguration()
+            .Destructure.AsScalar<global::Dnstap.Dnstap>()
+            .WriteTo.DnstapTcp("127.0.0.1", port, options,
+                connectionTimeout: TimeSpan.FromMilliseconds(500),
+                operationTimeout: TimeSpan.FromSeconds(3),
+                reconnectInterval: TimeSpan.FromMilliseconds(50),
+                onSinkCreated: sink => captured = sink)
+            .CreateLogger();
+        try
+        {
+            var dnsRecord = new global::Dnstap.Dnstap
+            {
+                Type = global::Dnstap.Dnstap.Types.Type.Message,
+                Message = new global::Dnstap.Message
+                {
+                    Type = global::Dnstap.Message.Types.Type.ClientResponse
+                }
+            };
+            logger.ForContext(DnstapEventProperty.Name, dnsRecord).Information("First event");
+            Assert.IsNotNull(captured);
+            for (var i = 0; i < 200 && captured.FailedBatches == 0; i++)
+                await Task.Delay(30);
+            Assert.AreEqual(1L, captured.FailedBatches);
+
+            var listener = new TcpListener(IPAddress.Loopback, port);
+            listener.Start();
+            try
+            {
+                var server = Task.Run(async () =>
+                {
+                    using var client = await listener.AcceptTcpClientAsync()
+                        .WaitAsync(TimeSpan.FromSeconds(5));
+                    using var stream = client.GetStream();
+                    var ready = await ReceiveFrameAsync(stream);
+                    Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(ready.Payload));
+                    await SendControlAsync(stream, 1);
+                    var start = await ReceiveFrameAsync(stream);
+                    Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(start.Payload));
+                    var data = await ReceiveFrameAsync(stream);
+                    Assert.IsFalse(data.IsControl);
+                    var stop = await ReceiveFrameAsync(stream);
+                    Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32BigEndian(stop.Payload));
+                    await SendControlAsync(stream, 5);
+                });
+
+                await Task.Delay(100);
+                logger.ForContext(DnstapEventProperty.Name, dnsRecord).Information("Second event");
+                for (var i = 0; i < 200 && captured.WrittenRecords == 0; i++)
+                    await Task.Delay(30);
+                Assert.AreEqual(1L, captured.WrittenRecords);
+                logger.Dispose();
+                await server.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.AreEqual(1L, captured.DroppedRecords);
+                Assert.AreEqual(1L, captured.FailedBatches);
+            }
+            finally
+            {
+                listener.Stop();
+            }
+        }
+        finally
+        {
+            logger.Dispose();
+        }
+    }
+
+    [TestMethod]
     public async Task SlowHandshakeWithinDeadlineSucceedsWithoutReconnecting()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
