@@ -33,6 +33,9 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private const int MaximumFrameDataLength = 96 * 1024;
     private readonly object _disposeSync = new();
     private Task? _disposeTask;
+    // Fluent batching must not observe transport failures as retriable batch faults:
+    // Serilog 4.3 can discard its entire queue when RetryTimeLimit is zero.
+    internal bool SuppressTransportExceptions { get; set; }
 
     /// <summary>Records whose frames were accepted by the local stream, not acknowledged by a collector.</summary>
     public long WrittenRecords => Interlocked.Read(ref _writtenRecords);
@@ -275,7 +278,9 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
 
                     SelfLog.WriteLine("DNSTap sink entered terminal failure after {0} locally written records: {1}",
                         WrittenRecords, ex);
-                    throw;
+                    if (!SuppressTransportExceptions)
+                        throw;
+                    return;
                 }
             }
         }
