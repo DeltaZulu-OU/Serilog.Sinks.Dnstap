@@ -40,8 +40,13 @@ jobs:
           set -euo pipefail
           [[ "$RECORDS" =~ ^[0-9]+$ ]] && (( RECORDS >= 1 && RECORDS <= 1000000 ))
           [[ "$BATCH_SIZE" =~ ^[0-9]+$ ]] && (( BATCH_SIZE >= 1 && BATCH_SIZE <= 10000 ))
+          dotnet --version | tee benchmark-environment.txt
+          uname -a | tee -a benchmark-environment.txt
+          for repeat in 1 2 3; do
+            echo "repeat=$repeat" | tee -a tcp-results.txt
+            dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- tcp "$RECORDS" "$BATCH_SIZE" | tee -a tcp-results.txt
+          done
           dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- file "$RECORDS" "$BATCH_SIZE" | tee file-results.txt
-          dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- tcp "$RECORDS" "$BATCH_SIZE" | tee tcp-results.txt
       - name: Preserve results
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -49,4 +54,5 @@ jobs:
           path: |
             file-results.txt
             tcp-results.txt
+            benchmark-environment.txt
           if-no-files-found: error

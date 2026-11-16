@@ -116,8 +116,8 @@ jobs:
       - name: Exercise file and TCP benchmark paths
         run: |
           set -euo pipefail
-          dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- file 1000 128 | tee file-smoke.txt
           dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- tcp 1000 128 | tee tcp-smoke.txt
+          dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release --no-build --no-restore -- file 1000 128 | tee file-smoke.txt
       - name: Preserve smoke measurements
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
