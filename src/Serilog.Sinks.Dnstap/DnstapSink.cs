@@ -124,9 +124,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     /// No automatic reconnect or replay is attempted after failure.
     /// </summary>
     public static async Task<DnstapSink> ConnectTcpAsync(
-        string host, int port, TimeSpan? operationTimeout = null,
-        CancellationToken cancellationToken = default,
-        TimeSpan? connectionTimeout = null)
+        string host, int port, TimeSpan? connectionTimeout = null,
+        TimeSpan? operationTimeout = null, CancellationToken cancellationToken = default)
     {
         var deadline = connectionTimeout ?? DefaultConnectionTimeout;
         ValidateTcpEndpoint(host, port, deadline, operationTimeout);
