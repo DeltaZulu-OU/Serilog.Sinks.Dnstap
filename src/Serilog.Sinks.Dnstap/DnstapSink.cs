@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using Serilog.Core;
 using Serilog.Events;
 
@@ -18,9 +19,17 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     /// <param name="stream">Writable destination for a complete Frame Streams file session.</param>
     /// <param name="leaveOpen">Whether the supplied stream remains open after sink disposal.</param>
     public DnstapSink(Stream stream, bool leaveOpen = true)
+        : this(stream, global::Dnstap.DnstapStreamMode.File, leaveOpen)
+    {
+    }
+
+    /// <summary>Uses a caller-supplied file or connected duplex stream.</summary>
+    public DnstapSink(Stream stream, global::Dnstap.DnstapStreamMode mode,
+        bool leaveOpen = true, TimeSpan? operationTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        _writer = new global::Dnstap.DnstapWriter(stream, leaveOpen: leaveOpen);
+        _writer = new global::Dnstap.DnstapWriter(stream, mode,
+            leaveOpen: leaveOpen, operationTimeout: operationTimeout);
     }
 
     /// <summary>Opens a new Frame Streams file. The sink owns the file handle.</summary>
@@ -36,6 +45,33 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         catch
         {
             stream.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Connects once to a TCP collector and owns the resulting socket stream.
+    /// No automatic reconnect or replay is attempted after failure.
+    /// </summary>
+    public static async Task<DnstapSink> ConnectTcpAsync(
+        string host, int port, TimeSpan? operationTimeout = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(host);
+        ArgumentOutOfRangeException.ThrowIfLessThan(port, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(port, 65535);
+
+        var client = new TcpClient();
+        try
+        {
+            await client.ConnectAsync(host, port, cancellationToken).ConfigureAwait(false);
+            // NetworkStream.Dispose closes the underlying socket; the sink owns the stream.
+            return new DnstapSink(client.GetStream(), global::Dnstap.DnstapStreamMode.Duplex,
+                leaveOpen: false, operationTimeout: operationTimeout);
+        }
+        catch
+        {
+            client.Dispose();
             throw;
         }
     }
