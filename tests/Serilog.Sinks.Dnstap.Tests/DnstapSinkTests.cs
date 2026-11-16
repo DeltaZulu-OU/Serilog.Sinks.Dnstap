@@ -135,6 +135,30 @@ public sealed class DnstapSinkTests
         Assert.AreEqual(0L, sink.FailedBatches);
     }
 
+    private sealed class FlushObservedStream : MemoryStream
+    {
+        public int FlushCount { get; private set; }
+
+        public override Task FlushAsync(CancellationToken cancellationToken)
+        {
+            FlushCount++;
+            return base.FlushAsync(cancellationToken);
+        }
+    }
+
+    [TestMethod]
+    public async Task CompletedFileBatchFlushesBeforeSinkDisposal()
+    {
+        using var stream = new FlushObservedStream();
+        var sink = new DnstapSink(stream);
+        await sink.EmitBatchAsync(new[] { Event(Record()) });
+        Assert.IsGreaterThan(0, stream.FlushCount,
+            "File-mode records should be flushed before the STOP frame is written.");
+        Assert.AreEqual(1L, sink.WrittenRecords);
+        await sink.DisposeAsync();
+        Assert.HasCount(3, ReadFrames(stream.ToArray()));
+    }
+
     private sealed class FailedOutputStream : MemoryStream
     {
         public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
