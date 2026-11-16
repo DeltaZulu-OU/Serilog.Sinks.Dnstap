@@ -4,7 +4,7 @@ A Serilog integration for DNS telemetry using [Dnstap.NET](https://github.com/De
 
 ## Status
 
-The current library supports typed `DnstapRecord` events, file-mode Frame Streams output, and a single TCP collector session. Fluent TCP registration defers connection until the first valid DNSTap event. TCP reconnect and batch replay are deliberately unsupported. Independent collector interoperability and deployment-level stress testing remain necessary.
+The current library supports typed `DnstapRecord` events, file-mode Frame Streams output, and a single TCP collector session. Fluent TCP registration defers connection until the first valid DNSTap event. TCP reconnect and batch replay are deliberately unsupported. Independent file and TCP interoperability is checked in CI using the Go DNSTap reader. Deployment-level stress testing remains necessary.
 
 ## Serilog integration
 
@@ -20,7 +20,7 @@ Each destination hosts one Frame Streams session. Session failures are terminal,
 
 ## Dependency restore
 
-`Dnstap.NET` version `0.1.0` is restored from [GitHub Packages](https://github.com/DeltaZulu-OU/Dnstap.NET/pkgs/nuget/Dnstap.NET). The `NuGet.Config` maps its package ID to the authenticated `deltazulu-github` feed. CI uses a `GITHUB_TOKEN` with `packages: read` and package-level Actions access. For local builds, authenticate with a token carrying `read:packages` and never commit credentials.
+The package includes this README, embedded debugging symbols and git repository metadata. CI packs and restores the local package in an isolated consumer project, then decodes file and TCP records using an independent Go DNSTap implementation. `Dnstap.NET` version `0.1.0` is restored from [GitHub Packages](https://github.com/DeltaZulu-OU/Dnstap.NET/pkgs/nuget/Dnstap.NET). The `NuGet.Config` maps its package ID to the authenticated `deltazulu-github` feed. CI uses a `GITHUB_TOKEN` with `packages: read` and package-level Actions access. For local builds, authenticate with a token carrying `read:packages` and never commit credentials.
 
 ## Licensing
 
