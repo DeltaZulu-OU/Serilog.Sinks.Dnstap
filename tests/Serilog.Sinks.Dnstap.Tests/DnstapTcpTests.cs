@@ -275,6 +275,50 @@ public sealed class DnstapTcpTests
     }
 
     [TestMethod]
+    public async Task SlowHandshakeWithinDeadlineSucceedsWithoutReconnecting()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var server = Task.Run(async () =>
+            {
+                using var client = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                using var stream = client.GetStream();
+                var ready = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(ready.Payload));
+                await Task.Delay(TimeSpan.FromMilliseconds(200));
+                await SendControlAsync(stream, 1);
+                var start = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(start.Payload));
+                var data = await ReceiveFrameAsync(stream);
+                Assert.IsFalse(data.IsControl);
+                var stop = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32BigEndian(stop.Payload));
+                await SendControlAsync(stream, 5);
+            });
+
+            await using (var sink = DnstapSink.CreateTcp("127.0.0.1", port,
+                operationTimeout: TimeSpan.FromSeconds(3)))
+            {
+                await sink.EmitBatchAsync(new[] { ResponseEvent() })
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.AreEqual(1L, sink.WrittenRecords);
+                Assert.AreEqual(0L, sink.FailedBatches);
+            }
+
+            await server.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.IsFalse(listener.Pending());
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
     public void FluentTcpConfigurationRejectsReplayAndInvalidTimeouts()
     {
         var config = new LoggerConfiguration();
