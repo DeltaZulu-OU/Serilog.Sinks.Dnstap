@@ -15,7 +15,7 @@ if (args.Length is not 3 || (args[0] != "file" && args[0] != "tcp") ||
 }
 
 var template = new MessageTemplateParser().Parse("DNS event");
-var record = new global::Dnstap.Dnstap
+var dnsRecord = new global::Dnstap.Dnstap
 {
     Type = global::Dnstap.Dnstap.Types.Type.Message,
     Message = new global::Dnstap.Message
@@ -25,7 +25,7 @@ var record = new global::Dnstap.Dnstap
 };
 var logEvent = new LogEvent(DateTimeOffset.UnixEpoch, LogEventLevel.Information,
     null, template,
-    new[] { new LogEventProperty(DnstapEventProperty.Name, new ScalarValue(record)) });
+    new[] { new LogEventProperty(DnstapEventProperty.Name, new ScalarValue(dnsRecord)) });
 var fullBatch = Enumerable.Repeat(logEvent, batchSize).ToArray();
 
 var path = Path.Combine(Path.GetTempPath(), $"serilog-dnstap-benchmark-{Guid.NewGuid():N}.fstrm");
