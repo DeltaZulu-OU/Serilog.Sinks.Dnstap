@@ -22,7 +22,10 @@ public static class DnstapSinkExtensions
         var sink = DnstapSink.CreateTcp(host, port, connectionTimeout, operationTimeout);
         try
         {
-            return configuration.Sink(sink, options, restrictedToMinimumLevel);
+            return configuration.Conditional(
+                e => DnstapEventProperty.TryGetScalar(e, out var value) &&
+                     value is global::Dnstap.Dnstap,
+                writeTo => writeTo.Sink(sink, options, restrictedToMinimumLevel));
         }
         catch
         {
@@ -86,7 +89,10 @@ public static class DnstapSinkExtensions
         var sink = DnstapSink.CreateFile(path, overwrite);
         try
         {
-            return configuration.Sink(sink, options, restrictedToMinimumLevel);
+            return configuration.Conditional(
+                e => DnstapEventProperty.TryGetScalar(e, out var value) &&
+                     value is global::Dnstap.Dnstap,
+                writeTo => writeTo.Sink(sink, options, restrictedToMinimumLevel));
         }
         catch
         {
