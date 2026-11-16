@@ -15,7 +15,7 @@ A [Serilog](https://serilog.net/) sink for forwarding DNS observations in the [D
 
 This sink accepts **typed DNSTap records**, not ordinary log messages or text-formatted DNS logs. Attach a `Dnstap.Dnstap` protobuf object as the scalar Serilog property `DnstapRecord`. Events without this property are not forwarded.
 
-### Write to a file
+### Send to a TCP collector
 
 ```csharp
 using System.Net;
@@ -25,7 +25,7 @@ using Serilog.Sinks.Dnstap;
 
 var logger = new LoggerConfiguration()
     .Destructure.AsScalar<global::Dnstap.Dnstap>()
-    .WriteTo.DnstapFile("dns.fstrm")
+    .WriteTo.DnstapTcp("127.0.0.1", 6000)
     .CreateLogger();
 
 var dnsRecord = DnstapRecordFactory.Create(new DnsLogEntry
@@ -47,22 +47,13 @@ logger.ForContext(DnstapEventProperty.Name, dnsRecord)
 await ((IAsyncDisposable)logger).DisposeAsync();
 ```
 
+The connection is established on the first eligible DNSTap event, not when constructing the logger. The sink initiates a Frame Streams handshake. After a transport failure, a configured TCP sink may establish a **new** session once the reconnect interval has elapsed (five seconds by default). It never replays events that failed or arrived during the outage. An immediately connected or caller-supplied stream cannot reconnect automatically. Configure `connectionTimeout`, `operationTimeout`, and `reconnectInterval` on `DnstapTcp()` when necessary.
+
+### Write to a file
+
+Replace `.WriteTo.DnstapTcp("127.0.0.1", 6000)` in the example above with `.WriteTo.DnstapFile("dns.fstrm")`.
+
 The file must not already exist; `DnstapFile()` refuses to overwrite it by default. Set `overwrite: true` only when replacement is intentional. The parent directory must exist. Each output file contains one Frame Streams session; the sink does not append or rotate files. File batches are flushed to the stream, but an abrupt shutdown may leave the stream without its final STOP frame, and flushing does not guarantee disk durability.
-
-### Send to a TCP collector
-
-Replace the `WriteTo.DnstapFile(...)` call above with:
-
-```csharp
-.WriteTo.DnstapTcp(
-    host: "127.0.0.1",
-    port: 6000,
-    connectionTimeout: TimeSpan.FromSeconds(10),
-    operationTimeout: TimeSpan.FromSeconds(30),
-    reconnectInterval: TimeSpan.FromSeconds(5))
-```
-
-The connection is established on the first eligible DNSTap event, not when constructing the logger. The sink initiates a Frame Streams handshake. After a transport failure, a configured TCP sink may establish a **new** session once the reconnect interval has elapsed. It never replays events that failed or arrived during the outage. An immediately connected or caller-supplied stream cannot reconnect automatically.
 
 ### Batching
 
@@ -83,7 +74,7 @@ var logger = new LoggerConfiguration()
     .CreateLogger();
 ```
 
-The batch size and buffering interval must be positive. A specified queue limit must be positive, and `RetryTimeLimit` must be zero. Unrelated application events are filtered before entering the sink's batching queue. A bounded queue can still discard DNSTap events when full; it does not block the producing thread to guarantee delivery.
+The batch size and buffering interval must be positive. A specified queue limit must be positive, and `RetryTimeLimit` must be zero. Unrelated application events are filtered before entering the sink's batching queue. A bounded queue can still discard DNSTap events when full; it does not block the producing thread to guarantee delivery. For a production TCP collector, select a queue limit and observe `DroppedRecords`, `FailedBatches`, and recovery behavior under load.
 
 **Record lifetime:** Protobuf records are mutable. Do not modify, reuse, or return a record to a pool after logging it. Serilog may serialize it later on its batching worker.
 
