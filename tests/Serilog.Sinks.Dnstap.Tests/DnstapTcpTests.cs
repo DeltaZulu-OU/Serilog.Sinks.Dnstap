@@ -288,8 +288,15 @@ public sealed class DnstapTcpTests
             operationTimeout: TimeSpan.FromSeconds(3),
             reconnectInterval: TimeSpan.FromMilliseconds(50));
 
-        await Assert.ThrowsExactlyAsync<SocketException>(() =>
-            sink.EmitBatchAsync(new[] { ResponseEvent() }));
+        try
+        {
+            await sink.EmitBatchAsync(new[] { ResponseEvent() });
+            Assert.Fail("Expected a connection refusal or timeout.");
+        }
+        catch (Exception ex) when (ex is SocketException or TimeoutException)
+        {
+            // Connection refusal is platform-dependent: Windows may report a timeout.
+        }
         Assert.AreEqual(1L, sink.DroppedRecords);
         await sink.EmitBatchAsync(new[] { ResponseEvent() });
         Assert.AreEqual(2L, sink.DroppedRecords);
