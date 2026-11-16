@@ -1,4 +1,5 @@
 using System.Net.Sockets;
+using Google.Protobuf;
 using Serilog.Core;
 using Serilog.Debugging;
 using Serilog.Events;
@@ -201,10 +202,11 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                 // These are the exact pre-I/O validity conditions enforced by
                 // Dnstap.NET 0.1.0's WriteAsync with its default frame limit.
                 // Do not classify exceptions raised by a stream as harmless errors.
-                if (!record!.IsInitialized() ||
-                    !Enum.IsDefined(record.Type) ||
-                    !Enum.IsDefined(record.Message.Type) ||
-                    record.CalculateSize() is < 1 or > MaximumFrameDataLength)
+                var candidate = record!;
+                if (!candidate.IsInitialized() ||
+                    !Enum.IsDefined(candidate.Type) ||
+                    !Enum.IsDefined(candidate.Message.Type) ||
+                    candidate.CalculateSize() is < 1 or > MaximumFrameDataLength)
                 {
                     Interlocked.Increment(ref _rejectedRecords);
                     continue;
@@ -224,7 +226,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                         _started = true;
                     }
 
-                    await _writer.WriteAsync(record).ConfigureAwait(false);
+                    await _writer.WriteAsync(candidate).ConfigureAwait(false);
                     Interlocked.Increment(ref _writtenRecords);
                 }
                 catch (Exception ex)
