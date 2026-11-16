@@ -1,10 +1,6 @@
 name: Bootstrap NuGet lock files
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/lock-dependencies.yml
   workflow_dispatch:
 
 permissions:
@@ -30,13 +26,6 @@ jobs:
         run: |
           dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config --locked-mode
           dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config --locked-mode
-      - name: Display resolved dependency locks for signed repository commit
-        run: |
-          for path in src/Serilog.Sinks.Dnstap/packages.lock.json tests/Serilog.Sinks.Dnstap.Tests/packages.lock.json benchmarks/Serilog.Sinks.Dnstap.Benchmarks/packages.lock.json; do
-            echo "DNSTAP_LOCK_BEGIN:$path"
-            cat "$path"
-            echo "DNSTAP_LOCK_END:$path"
-          done
       - name: Preserve resolved dependencies
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

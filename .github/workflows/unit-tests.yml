@@ -31,7 +31,7 @@ jobs:
       - name: Restore with authenticated DeltaZulu GitHub Packages feed
         env:
           NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
-        run: dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config
+        run: dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config --locked-mode
       - name: Build
         run: dotnet build Serilog.Sinks.Dnstap.slnx -c Release --no-restore
       - name: Test
@@ -54,7 +54,7 @@ jobs:
           go-version: "1.25.6"
       - name: Build validated NuGet candidate
         run: |
-          dotnet restore src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj --configfile NuGet.Config
+          dotnet restore src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj --configfile NuGet.Config --locked-mode
           dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-restore --output artifacts/packages /p:RepositoryCommit=${{ github.sha }}
       - name: Validate NuGet metadata and dependencies
         run: python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
@@ -111,7 +111,7 @@ jobs:
           global-json-file: global.json
       - name: Restore and build benchmark harness
         run: |
-          dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config
+          dotnet restore benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj --configfile NuGet.Config --locked-mode
           dotnet build benchmarks/Serilog.Sinks.Dnstap.Benchmarks/Serilog.Sinks.Dnstap.Benchmarks.csproj -c Release --no-restore
       - name: Exercise file and TCP benchmark paths
         run: |
