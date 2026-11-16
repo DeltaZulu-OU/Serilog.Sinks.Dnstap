@@ -17,6 +17,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private readonly int _tcpPort;
     private readonly TimeSpan? _operationTimeout;
     private readonly TimeSpan _connectionTimeout;
+    private readonly TimeSpan _reconnectInterval;
+    private DateTimeOffset _reconnectAfter;
     private static readonly TimeSpan DefaultConnectionTimeout = TimeSpan.FromSeconds(10);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private int _disposed;
@@ -63,12 +65,14 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             leaveOpen: leaveOpen, operationTimeout: operationTimeout);
     }
 
-    private DnstapSink(string host, int port, TimeSpan connectionTimeout, TimeSpan? operationTimeout)
+    private DnstapSink(string host, int port, TimeSpan connectionTimeout, TimeSpan? operationTimeout,
+        TimeSpan reconnectInterval)
     {
         _tcpHost = host;
         _tcpPort = port;
         _connectionTimeout = connectionTimeout;
         _operationTimeout = operationTimeout;
+        _reconnectInterval = reconnectInterval;
     }
 
     private static void ValidateTcpEndpoint(string host, int port, TimeSpan connectionTimeout, TimeSpan? operationTimeout)
@@ -90,14 +94,19 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
 
     /// <summary>
     /// Configures one TCP session, connecting on the first eligible event rather than
-    /// during logger construction. No implicit reconnection or batch replay is performed.
+    /// during logger construction. Failed sessions may be replaced after a cooldown,
+    /// but no failed batch or individual record is ever replayed.
     /// </summary>
     public static DnstapSink CreateTcp(string host, int port,
-        TimeSpan? connectionTimeout = null, TimeSpan? operationTimeout = null)
+        TimeSpan? connectionTimeout = null, TimeSpan? operationTimeout = null,
+        TimeSpan? reconnectInterval = null)
     {
         var deadline = connectionTimeout ?? DefaultConnectionTimeout;
         ValidateTcpEndpoint(host, port, deadline, operationTimeout);
-        return new DnstapSink(host, port, deadline, operationTimeout);
+        var interval = reconnectInterval ?? TimeSpan.FromSeconds(5);
+        if (interval <= TimeSpan.Zero || interval.TotalMilliseconds > int.MaxValue)
+            throw new ArgumentOutOfRangeException(nameof(reconnectInterval));
+        return new DnstapSink(host, port, deadline, operationTimeout, interval);
     }
 
     /// <summary>Opens a new Frame Streams file, refusing to replace existing data by default.</summary>
@@ -169,8 +178,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     }
 
     /// <summary>
-    /// Skips unrelated Serilog events. Errors during initialization or forwarding are terminal:
-    /// a partially written Frame Streams session must not be replayed or silently reopened.
+    /// Skips unrelated Serilog events. A failed record is never replayed.
+    /// Configured TCP sessions may reopen after a cooldown; caller-supplied streams cannot.
     /// </summary>
     public async Task EmitBatchAsync(IReadOnlyCollection<LogEvent> batch)
     {
@@ -183,8 +192,31 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             if (_faulted)
             {
-                CountDropped(batch);
-                throw new InvalidOperationException("DNSTap session is faulted; reconnect or recreate explicitly.");
+                // A stream supplied directly by the caller cannot be reopened. A
+                // configured TCP destination can establish a new session without replay.
+                if (_tcpHost is null || DateTimeOffset.UtcNow < _reconnectAfter)
+                {
+                    CountDropped(batch);
+                    return;
+                }
+
+                // A failed writer cannot resume its Frame Streams state. Release
+                // the old transport before initiating a fresh TCP handshake.
+                try
+                {
+                    if (_writer is not null)
+                        await _writer.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    SelfLog.WriteLine("DNSTap failed to release old session: {0}", ex);
+                }
+                finally
+                {
+                    _writer = null;
+                    _started = false;
+                    _faulted = false;
+                }
             }
 
             // Materialize once so that a partial failure can account for unprocessed records.
@@ -231,6 +263,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                 catch (Exception ex)
                 {
                     _faulted = true;
+                    if (_tcpHost is not null)
+                        _reconnectAfter = DateTimeOffset.UtcNow.Add(_reconnectInterval);
                     Interlocked.Increment(ref _failedBatches);
                     Interlocked.Increment(ref _droppedRecords);
                     for (var remaining = i + 1; remaining < events.Count; remaining++)
