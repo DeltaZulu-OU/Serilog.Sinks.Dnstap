@@ -17,13 +17,15 @@ public static class DnstapSinkExtensions
         BatchingOptions? batchingOptions = null,
         LogEventLevel restrictedToMinimumLevel = LogEventLevel.Verbose,
         TimeSpan? connectionTimeout = null, TimeSpan? operationTimeout = null,
-        TimeSpan? reconnectInterval = null)
+        TimeSpan? reconnectInterval = null,
+        Action<DnstapSink>? onSinkCreated = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         var options = ValidateBatching(batchingOptions);
         var sink = DnstapSink.CreateTcp(host, port, connectionTimeout, operationTimeout, reconnectInterval);
         try
         {
+            onSinkCreated?.Invoke(sink);
             return configuration.Conditional(
                 e => DnstapEventProperty.TryGetScalar(e, out var value) &&
                      value is global::Dnstap.Dnstap,
@@ -82,7 +84,8 @@ public static class DnstapSinkExtensions
         this LoggerSinkConfiguration configuration, string path,
         BatchingOptions? batchingOptions = null,
         LogEventLevel restrictedToMinimumLevel = LogEventLevel.Verbose,
-        bool overwrite = false)
+        bool overwrite = false,
+        Action<DnstapSink>? onSinkCreated = null)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
@@ -91,6 +94,7 @@ public static class DnstapSinkExtensions
         var sink = DnstapSink.CreateFile(path, overwrite);
         try
         {
+            onSinkCreated?.Invoke(sink);
             return configuration.Conditional(
                 e => DnstapEventProperty.TryGetScalar(e, out var value) &&
                      value is global::Dnstap.Dnstap,
