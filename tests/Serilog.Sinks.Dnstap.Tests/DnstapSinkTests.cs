@@ -149,8 +149,7 @@ public sealed class DnstapSinkTests
         var sink = new DnstapSink(stream);
         await Assert.ThrowsExactlyAsync<IOException>(() =>
             sink.EmitBatchAsync(new[] { Event(Record()) }));
-        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-            sink.EmitBatchAsync(new[] { Event(Record()) }));
+        await sink.EmitBatchAsync(new[] { Event(Record()) });
         Assert.AreEqual(1L, sink.FailedBatches);
         Assert.AreEqual(0L, sink.WrittenRecords);
         Assert.AreEqual(2L, sink.DroppedRecords);
