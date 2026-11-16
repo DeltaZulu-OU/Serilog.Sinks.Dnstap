@@ -264,9 +264,66 @@ public sealed class DnstapTcpTests
                 .WaitAsync(TimeSpan.FromSeconds(5));
             // The TCP collector never sends ACCEPT, so the writer times out.
             await Assert.ThrowsExactlyAsync<TimeoutException>(() => emission);
-            await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
-                sink.EmitBatchAsync(new[] { ResponseEvent() }));
-            Assert.IsFalse(listener.Pending(), "A terminal failure must not reconnect.");
+            await sink.EmitBatchAsync(new[] { ResponseEvent() });
+            Assert.AreEqual(2L, sink.DroppedRecords);
+            Assert.AreEqual(1L, sink.FailedBatches);
+            Assert.IsFalse(listener.Pending(), "A session must not reconnect before the cooldown.");
+        }
+        finally
+        {
+            listener.Stop();
+        }
+    }
+
+    [TestMethod]
+    public async Task RefusedConnectionCanRecoverWithoutReplayingFailedEvents()
+    {
+        var temporary = new TcpListener(IPAddress.Loopback, 0);
+        temporary.Start();
+        var port = ((IPEndPoint)temporary.LocalEndpoint).Port;
+        temporary.Stop();
+
+        await using var sink = DnstapSink.CreateTcp("127.0.0.1", port,
+            connectionTimeout: TimeSpan.FromSeconds(2),
+            operationTimeout: TimeSpan.FromSeconds(3),
+            reconnectInterval: TimeSpan.FromMilliseconds(50));
+
+        await Assert.ThrowsExactlyAsync<SocketException>(() =>
+            sink.EmitBatchAsync(new[] { ResponseEvent() }));
+        Assert.AreEqual(1L, sink.DroppedRecords);
+        await sink.EmitBatchAsync(new[] { ResponseEvent() });
+        Assert.AreEqual(2L, sink.DroppedRecords);
+        Assert.AreEqual(1L, sink.FailedBatches);
+
+        var listener = new TcpListener(IPAddress.Loopback, port);
+        listener.Start();
+        try
+        {
+            var server = Task.Run(async () =>
+            {
+                using var accepted = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                using var stream = accepted.GetStream();
+                var ready = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(ready.Payload));
+                await SendControlAsync(stream, 1);
+                var start = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(start.Payload));
+                var data = await ReceiveFrameAsync(stream);
+                Assert.IsFalse(data.IsControl);
+                Assert.AreEqual(global::Dnstap.Message.Types.Type.ClientResponse,
+                    global::Dnstap.Dnstap.Parser.ParseFrom(data.Payload).Message.Type);
+                var stop = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32BigEndian(stop.Payload));
+                await SendControlAsync(stream, 5);
+            });
+
+            await Task.Delay(100);
+            await sink.EmitBatchAsync(new[] { ResponseEvent() });
+            Assert.AreEqual(1L, sink.WrittenRecords);
+            Assert.AreEqual(2L, sink.DroppedRecords);
+            await sink.DisposeAsync();
+            await server.WaitAsync(TimeSpan.FromSeconds(5));
         }
         finally
         {
