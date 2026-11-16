@@ -205,6 +205,32 @@ public sealed class DnstapSinkTests
     }
 
     [TestMethod]
+    public async Task BlockedWriterAppliesBackpressureToConcurrentDirectBatches()
+    {
+        using var stream = new PausedWriteStream();
+        await using var sink = new DnstapSink(stream);
+        var first = sink.EmitBatchAsync(new[] { Event(Record()) });
+        try
+        {
+            await stream.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            var pending = Enumerable.Range(0, 8)
+                .Select(_ => sink.EmitBatchAsync(new[] { Event(Record()) }))
+                .ToArray();
+            Assert.IsTrue(pending.All(task => !task.IsCompleted),
+                "Batches should wait for the active writer rather than be silently dropped.");
+            Assert.AreEqual(0L, sink.WrittenRecords);
+            stream.Resume();
+            await Task.WhenAll(pending.Append(first)).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.AreEqual(9L, sink.WrittenRecords);
+            Assert.AreEqual(0L, sink.FailedBatches);
+        }
+        finally
+        {
+            stream.Resume();
+        }
+    }
+
+    [TestMethod]
     public async Task ConcurrentBatchesAreSerializedAndCounted()
     {
         using var stream = new MemoryStream();
