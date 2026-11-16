@@ -24,6 +24,8 @@ Run `dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release 
 
 ## Dependency restore
 
+This project is intended for internal evaluation and source builds, not external package consumption yet; restoring `Dnstap.NET` requires authenticated access to the DeltaZulu GitHub Packages feed.
+
 The package includes this README, embedded debugging symbols and git repository metadata. CI packs and restores the local package in an isolated consumer project, then decodes file and TCP records using an independent Go DNSTap implementation. `Dnstap.NET` version `0.1.0` is restored from [GitHub Packages](https://github.com/DeltaZulu-OU/Dnstap.NET/pkgs/nuget/Dnstap.NET). The `NuGet.Config` maps its package ID to the authenticated `deltazulu-github` feed. CI uses a `GITHUB_TOKEN` with `packages: read` and package-level Actions access. For local builds, authenticate with a token carrying `read:packages` and never commit credentials.
 
 ## Licensing
