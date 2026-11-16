@@ -23,6 +23,7 @@ public static class DnstapSinkExtensions
         ArgumentNullException.ThrowIfNull(configuration);
         var options = ValidateBatching(batchingOptions);
         var sink = DnstapSink.CreateTcp(host, port, connectionTimeout, operationTimeout, reconnectInterval);
+        sink.SuppressTransportExceptions = true;
         try
         {
             onSinkCreated?.Invoke(sink);
@@ -92,6 +93,7 @@ public static class DnstapSinkExtensions
 
         var options = ValidateBatching(batchingOptions);
         var sink = DnstapSink.CreateFile(path, overwrite);
+        sink.SuppressTransportExceptions = true;
         try
         {
             onSinkCreated?.Invoke(sink);
