@@ -24,6 +24,10 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private long _writtenRecords;
     private long _ignoredEvents;
     private long _failedBatches;
+    private long _rejectedRecords;
+    private long _droppedRecords;
+    // Mirrors Dnstap.NET 0.1.0's default maximum Frame Streams DATA length.
+    private const int MaximumFrameDataLength = 96 * 1024;
     private readonly object _disposeSync = new();
     private Task? _disposeTask;
 
@@ -32,6 +36,12 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
 
     /// <summary>Log events without a supported DNSTap record; never forwarded.</summary>
     public long IgnoredEvents => Interlocked.Read(ref _ignoredEvents);
+
+    /// <summary>DNSTap records rejected locally before I/O (invalid protobuf or oversized).</summary>
+    public long RejectedRecords => Interlocked.Read(ref _rejectedRecords);
+
+    /// <summary>Records not forwarded because a session failed, including subsequent batches.</summary>
+    public long DroppedRecords => Interlocked.Read(ref _droppedRecords);
 
     /// <summary>Batches that failed during connection, handshake or write.</summary>
     public long FailedBatches => Interlocked.Read(ref _failedBatches);
@@ -173,14 +183,30 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
             if (_faulted)
             {
+                CountDropped(batch);
                 throw new InvalidOperationException("DNSTap session is faulted; reconnect or recreate explicitly.");
             }
 
-            foreach (var logEvent in batch)
+            // Materialize once so that a partial failure can account for unprocessed records.
+            var events = batch as IReadOnlyList<LogEvent> ?? batch.ToArray();
+            for (var i = 0; i < events.Count; i++)
             {
+                var logEvent = events[i];
                 if (!DnstapEventProperty.TryGetRecord(logEvent, out var record))
                 {
                     Interlocked.Increment(ref _ignoredEvents);
+                    continue;
+                }
+
+                // These are the exact pre-I/O validity conditions enforced by
+                // Dnstap.NET 0.1.0's WriteAsync with its default frame limit.
+                // Do not classify exceptions raised by a stream as harmless errors.
+                if (!record!.IsInitialized() ||
+                    !Enum.IsDefined(record.Type) ||
+                    !Enum.IsDefined(record.Message.Type) ||
+                    record.CalculateSize() is < 1 or > MaximumFrameDataLength)
+                {
+                    Interlocked.Increment(ref _rejectedRecords);
                     continue;
                 }
 
@@ -198,13 +224,20 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                         _started = true;
                     }
 
-                    await _writer.WriteAsync(record!).ConfigureAwait(false);
+                    await _writer.WriteAsync(record).ConfigureAwait(false);
                     Interlocked.Increment(ref _writtenRecords);
                 }
                 catch (Exception ex)
                 {
                     _faulted = true;
                     Interlocked.Increment(ref _failedBatches);
+                    Interlocked.Increment(ref _droppedRecords);
+                    for (var remaining = i + 1; remaining < events.Count; remaining++)
+                    {
+                        if (IsDnstapCandidate(events[remaining]))
+                            Interlocked.Increment(ref _droppedRecords);
+                    }
+
                     SelfLog.WriteLine("DNSTap sink entered terminal failure after {0} locally written records: {1}",
                         WrittenRecords, ex);
                     throw;
@@ -214,6 +247,19 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         finally
         {
             _gate.Release();
+        }
+    }
+
+    private static bool IsDnstapCandidate(LogEvent logEvent) =>
+        DnstapEventProperty.TryGetScalar(logEvent, out var value) &&
+        value is global::Dnstap.Dnstap;
+
+    private void CountDropped(IReadOnlyCollection<LogEvent> batch)
+    {
+        foreach (var logEvent in batch)
+        {
+            if (IsDnstapCandidate(logEvent))
+                Interlocked.Increment(ref _droppedRecords);
         }
     }
 
