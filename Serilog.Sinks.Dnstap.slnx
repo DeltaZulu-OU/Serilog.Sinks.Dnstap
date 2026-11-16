@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj" />
+  <Project Path="tests/Serilog.Sinks.Dnstap.Tests/Serilog.Sinks.Dnstap.Tests.csproj" />
+</Solution>

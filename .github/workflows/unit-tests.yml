@@ -1,72 +1,39 @@
 name: Unit Tests
 
 on:
-  pull_request:
-    paths:
-      - '.github/*.yml'
-      - '.github/workflows/*.yml'
-      - 'Directory.Build.props'
-      - 'Directory.Packages.props'
-      - '*.slnx'              # Triggers on any solution file changes without hardcoding the name
-      - 'src/**'
-      - 'tests/**'
   push:
-    branches: [ main, master ]
+    branches: [main, "feature/**"]
     paths:
-      - '.github/*.yml'
-      - '.github/workflows/*.yml'
-      - 'Directory.Build.props'
-      - 'Directory.Packages.props'
-      - '*.slnx'
-      - 'src/**'
-      - 'tests/**'
+      - ".github/workflows/unit-tests.yml"
+      - "NuGet.Config"
+      - "global.json"
+      - "*.slnx"
+      - "src/**"
+      - "tests/**"
+  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
-env:
-  DOTNET_NOLOGO: true
-  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  packages: read
 
 jobs:
   unit-tests:
-    name: ${{ matrix.os }} unit tests
-    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        os: [ ubuntu-latest, windows-latest, macos-latest ]
-
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-dotnet@v5
         with:
-          # Use 'recursive' to fetch nested submodules, or 'true' for just the top-level ones
-          submodules: recursive
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v5
-        with:
-          dotnet-version: '10.0.x'
-
-      - name: Restore packages
-        run: dotnet restore --locked-mode
-
+          global-json-file: global.json
+      - name: Restore with authenticated DeltaZulu GitHub Packages feed
+        env:
+          NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
+        run: dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config
       - name: Build
-        run: dotnet build --configuration Release --no-restore
-
+        run: dotnet build Serilog.Sinks.Dnstap.slnx -c Release --no-restore
       - name: Test
-        run: dotnet test --configuration Release --no-build --logger "trx;LogFileName=test-results.trx" --results-directory TestResults
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results-${{ matrix.os }}
-          path: TestResults/**/*.trx
-          if-no-files-found: ignore
+        run: dotnet test tests/Serilog.Sinks.Dnstap.Tests/Serilog.Sinks.Dnstap.Tests.csproj -c Release --no-build --no-restore
