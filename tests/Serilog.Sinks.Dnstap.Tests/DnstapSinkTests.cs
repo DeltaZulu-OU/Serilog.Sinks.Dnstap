@@ -27,16 +27,16 @@ public sealed class DnstapSinkTests
         var offset = 0;
         while (offset < data.Length)
         {
-            Assert.IsGreaterThanOrEqualTo(data.Length - offset, 4, "Truncated frame header.");
+            Assert.IsGreaterThanOrEqualTo(4, data.Length - offset, "Truncated frame header.");
             var length = checked((int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(offset, 4)));
             offset += 4;
             if (length == 0)
             {
-                Assert.IsGreaterThanOrEqualTo(data.Length - offset, 4, "Truncated control length.");
+                Assert.IsGreaterThanOrEqualTo(4, data.Length - offset, "Truncated control length.");
                 length = checked((int)BinaryPrimitives.ReadUInt32BigEndian(data.AsSpan(offset, 4)));
                 offset += 4;
-                Assert.IsGreaterThanOrEqualTo(length, 4, "Invalid control payload.");
-                Assert.IsGreaterThanOrEqualTo(data.Length - offset, length, "Truncated control payload.");
+                Assert.IsGreaterThanOrEqualTo(4, length, "Invalid control payload.");
+                Assert.IsGreaterThanOrEqualTo(length, data.Length - offset, "Truncated control payload.");
                 var payload = new byte[length + 1];
                 payload[0] = 0; // control marker
                 data.AsSpan(offset, length).CopyTo(payload.AsSpan(1));
@@ -44,7 +44,7 @@ public sealed class DnstapSinkTests
             }
             else
             {
-                Assert.IsGreaterThanOrEqualTo(data.Length - offset, length, "Truncated data payload.");
+                Assert.IsGreaterThanOrEqualTo(length, data.Length - offset, "Truncated data payload.");
                 frames.Add(data.AsSpan(offset, length).ToArray());
             }
 
