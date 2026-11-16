@@ -290,6 +290,14 @@ public sealed class DnstapTcpTests
     }
 
     [TestMethod]
+    public void InvalidNativeBatchSettingsAreRejectedForTcp()
+    {
+        var options = new BatchingOptions { RetryTimeLimit = TimeSpan.Zero, QueueLimit = 0 };
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+            new LoggerConfiguration().WriteTo.DnstapTcp("127.0.0.1", 53, options));
+    }
+
+    [TestMethod]
     public async Task TcpConfigurationRejectsInvalidEndpoint()
     {
         await Assert.ThrowsExactlyAsync<ArgumentException>(() =>

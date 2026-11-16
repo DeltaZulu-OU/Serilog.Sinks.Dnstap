@@ -8,11 +8,6 @@ namespace Serilog.Sinks.Dnstap;
 public static class DnstapSinkExtensions
 {
     /// <summary>
-    /// Writes typed DNSTap records into one Frame Streams file.
-    /// The built-in Serilog batch retry window is disabled to prevent replaying
-    /// records from a partially written session after an ambiguous failure.
-    /// </summary>
-    /// <summary>
     /// Registers TCP forwarding. The connection starts asynchronously on the first DNSTap record,
     /// not when constructing the logger. Connection and handshake failures are terminal.
     /// </summary>
@@ -36,6 +31,10 @@ public static class DnstapSinkExtensions
         }
     }
 
+    /// <summary>
+    /// Validates native Serilog batching settings before creating any destination.
+    /// Native batching owns the only queue and retry scheduler.
+    /// </summary>
     private static BatchingOptions ValidateBatching(BatchingOptions? batchingOptions)
     {
         var options = batchingOptions ?? new BatchingOptions
@@ -48,9 +47,32 @@ public static class DnstapSinkExtensions
                 "DNSTap does not support automatic batch replay; RetryTimeLimit must be zero.",
                 nameof(batchingOptions));
         }
+
+        if (options.BatchSizeLimit <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(batchingOptions),
+                "BatchSizeLimit must be greater than zero.");
+        }
+
+        if (options.BufferingTimeLimit <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(batchingOptions),
+                "BufferingTimeLimit must be greater than zero.");
+        }
+
+        if (options.QueueLimit is <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(batchingOptions),
+                "QueueLimit must be greater than zero when specified.");
+        }
+
         return options;
     }
 
+    /// <summary>
+    /// Registers a file-mode DNSTap sink. Existing files are preserved unless overwrite is true.
+    /// Serilog's batching queue is used with no automatic retries.
+    /// </summary>
     public static LoggerConfiguration DnstapFile(
         this LoggerSinkConfiguration configuration, string path,
         BatchingOptions? batchingOptions = null,

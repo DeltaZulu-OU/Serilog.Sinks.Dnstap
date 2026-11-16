@@ -16,6 +16,58 @@ public sealed class DnstapSinkExtensionsTests
     }
 
     [TestMethod]
+    public void InvalidBatchOptionsFailBeforeCreatingFile()
+    {
+        var invalid = new BatchingOptions[]
+        {
+            new() { RetryTimeLimit = TimeSpan.FromSeconds(1) },
+            new() { RetryTimeLimit = TimeSpan.Zero, BatchSizeLimit = 0 },
+            new() { RetryTimeLimit = TimeSpan.Zero, BufferingTimeLimit = TimeSpan.Zero },
+            new() { RetryTimeLimit = TimeSpan.Zero, QueueLimit = 0 }
+        };
+
+        foreach (var batching in invalid)
+        {
+            var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
+            Assert.ThrowsExactly<ArgumentException>(() =>
+                new LoggerConfiguration().WriteTo.DnstapFile(path, batching));
+            Assert.IsFalse(File.Exists(path), "Invalid configuration created an output file.");
+        }
+    }
+
+    [TestMethod]
+    public void ValidCustomBatchOptionsAreAcceptedForBothTransports()
+    {
+        var batch = new BatchingOptions
+        {
+            RetryTimeLimit = TimeSpan.Zero,
+            BatchSizeLimit = 1,
+            BufferingTimeLimit = TimeSpan.FromMilliseconds(100),
+            QueueLimit = 5,
+            EagerlyEmitFirstEvent = false
+        };
+        var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
+        try
+        {
+            using (var logger = new LoggerConfiguration()
+                .WriteTo.DnstapFile(path, batch).CreateLogger())
+            {
+            }
+            using (var logger = new LoggerConfiguration()
+                .WriteTo.DnstapTcp("127.0.0.1", 53, batch).CreateLogger())
+            {
+            }
+        }
+        finally
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+    }
+
+    [TestMethod]
     public void ExistingFileIsPreservedByDefault()
     {
         var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
