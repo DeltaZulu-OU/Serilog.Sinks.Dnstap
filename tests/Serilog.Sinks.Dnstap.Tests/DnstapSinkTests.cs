@@ -84,7 +84,7 @@ public sealed class DnstapSinkTests
     }
 
     [TestMethod]
-    public async Task InvalidRecordFaultsSessionPermanently()
+    public async Task InvalidRecordIsSkippedWithoutFaultingSession()
     {
         using var stream = new MemoryStream();
         var sink = new DnstapSink(stream);
@@ -95,6 +95,25 @@ public sealed class DnstapSinkTests
         await sink.EmitBatchAsync(new[] { Event(Record()) });
         await sink.DisposeAsync();
         Assert.HasCount(3, ReadFrames(stream.ToArray()));
+    }
+
+    private sealed class FailedOutputStream : MemoryStream
+    {
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer,
+            CancellationToken cancellationToken = default) =>
+            throw new IOException("Simulated output failure.");
+    }
+
+    [TestMethod]
+    public async Task IoFailureFaultsSessionPermanently()
+    {
+        using var stream = new FailedOutputStream();
+        var sink = new DnstapSink(stream);
+        await Assert.ThrowsExactlyAsync<IOException>(() =>
+            sink.EmitBatchAsync(new[] { Event(Record()) }));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() =>
+            sink.EmitBatchAsync(new[] { Event(Record()) }));
+        await sink.DisposeAsync();
     }
 
     [TestMethod]

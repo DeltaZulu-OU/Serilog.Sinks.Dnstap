@@ -37,3 +37,5 @@ jobs:
         run: dotnet build Serilog.Sinks.Dnstap.slnx -c Release --no-restore
       - name: Test
         run: dotnet test tests/Serilog.Sinks.Dnstap.Tests/Serilog.Sinks.Dnstap.Tests.csproj -c Release --no-build --no-restore
+      - name: Verify NuGet package can be built
+        run: dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-build --no-restore --output artifacts
