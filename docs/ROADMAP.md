@@ -2,6 +2,8 @@
 
 Work proceeds on `main`, one focused commit per change. Each phase requires passing Linux, Windows, and macOS CI before it is marked complete. No release is published until the final release gates pass.
 
+Status: **Phases 1 and 2 complete** (file safety and deferred TCP configuration, including cross-platform CI). Next: Phase 3.
+
 | Phase | Scope | Exit criteria |
 | --- | --- | --- |
 | 1 | File safety and lifecycle | No implicit overwrite; explicit replacement; ownership, shutdown, and creation errors tested |
