@@ -1,33 +1,142 @@
 # Serilog.Sinks.Dnstap
 
-A Serilog integration for DNS telemetry using [Dnstap.NET](https://github.com/DeltaZulu-OU/Dnstap.NET).
+A [Serilog](https://serilog.net/) sink for forwarding DNS observations in the [DNSTap](https://dnstap.info/) format. It uses [Dnstap.NET](https://github.com/DeltaZulu-OU/Dnstap.NET) to encode protobuf messages and write [Frame Streams](https://github.com/farsightsec/fstrm) to a file or a TCP collector.
 
-## Status
+**Availability:** This package is intended for internal evaluation and source builds. It is not yet distributed for general package consumption. The `Dnstap.NET` dependency is currently hosted on an authenticated DeltaZulu GitHub Packages feed; cloning this repository alone does not remove that restore requirement.
 
-The current library supports typed `DnstapRecord` events, file-mode Frame Streams output, and TCP collector sessions. Fluent TCP registration defers connection until the first valid DNSTap event; a failed TCP session may be replaced after a cooldown (five seconds by default), but failed records are never replayed. Independent file and TCP interoperability is checked in CI using the Go DNSTap reader. Deployment-level stress testing remains necessary.
+## Requirements
 
-## Serilog integration
+- .NET 10.
+- Serilog 4.x and Dnstap.NET 0.1.0 (resolved through the project dependencies).
+- For TCP forwarding, a DNSTap-compatible Frame Streams collector. The TCP connection is unencrypted; use a trusted network or an independently protected transport.
+- For local source builds, authorized `read:packages` access to the DeltaZulu GitHub Packages NuGet feed. Do not store access tokens in the repository.
 
-Configure a logger with `WriteTo.DnstapFile(path)` to write a new Frame Streams file. Existing files are preserved: the default creation mode fails if the path already exists. To explicitly replace an existing file, set `overwrite: true`. The sink does not append another session to an existing capture. Parent directories must exist. For TCP, use `WriteTo.DnstapTcp(host, port, connectionTimeout: ..., operationTimeout: ...)`. Constructing a logger does not open a socket; the first eligible event starts a connection and Frame Streams handshake. `reconnectInterval` controls the minimum delay before a new TCP session is attempted after a failure. This is not a replay mechanism; records observed during downtime are dropped. Connection timeout defaults to 10 seconds, and the duplex operation timeout defaults to 30 seconds. The extension registers the sink with Serilog's built-in batching and sets `RetryTimeLimit` to zero to avoid replaying a partially written session. A supplied `BatchingOptions` must also use a zero retry time limit, a positive batch size and flush interval, and a positive bounded queue limit (or `null` for an unbounded queue). Invalid batching settings are rejected before opening files or TCP connections. Prefer `await Log.CloseAndFlushAsync()` for global logger shutdown, or asynchronously dispose owned loggers when supported; synchronous `Dispose()` and `Log.CloseAndFlush()` block until the transport shutdown finishes.
+## Usage
 
-The fluent registration filters unrelated events before Serilog's batching queue, so ordinary application logs cannot displace DNSTap records. DNSTap protobuf objects are mutable: callers must not change or reuse the record after passing it to Serilog, because serialization happens asynchronously. The `DnstapRecord` property must contain an ordinary scalar `Dnstap.Dnstap` protobuf instance; other log events are ignored. For standard Serilog `ForContext()` calls, register `.Destructure.AsScalar<global::Dnstap.Dnstap>()` on `LoggerConfiguration` before creating the logger, or construct a raw `ScalarValue(record)` when adapting `LogEvent` objects. Serilog otherwise converts arbitrary objects into properties or text, losing the protobuf instance. Call Dnstap.NET's record factory to build records from DNS observation data.
+This sink accepts **typed DNSTap records**, not ordinary log messages or text-formatted DNS logs. Attach a `Dnstap.Dnstap` protobuf object as the scalar Serilog property `DnstapRecord`. Events without this property are not forwarded.
 
-## Direct batched adapter
+### Write to a file
 
-`DnstapSink.CreateFile(path, overwrite: false)` opens an owned file destination without truncating existing files. `DnstapSink.ConnectTcpAsync(host, port, connectionTimeout, operationTimeout, cancellationToken)` connects immediately, asynchronously, to a duplex TCP collector, with a bounded connection deadline. `DnstapSink.CreateTcp(host, port)` returns a deferred-connection adapter with fresh-session reconnection suitable for an existing dispatcher. The immediately connected `ConnectTcpAsync()` adapter is a single session and is not automatically reconnectable. Both implement `IBatchedLogEventSink`, suitable for consumers such as LogForwarderApp with an existing dispatcher. Call `EmitBatchAsync()` directly and dispose after draining. Do not wrap the direct adapter in a second batching queue.
+```csharp
+using System.Net;
+using Dnstap;
+using Serilog;
+using Serilog.Sinks.Dnstap;
 
-Each file destination hosts one Frame Streams session. A TCP connection or handshake failure terminates the current session; a configured TCP destination can create a new session after its cooldown without replaying any failed records. Stream-supplied and immediately connected adapters cannot be reopened automatically. Callers should report and account for lost records rather than replaying. The sink exposes `SubmittedRecords` (eligible records entering the fluent sink before Serilog batching), `WrittenRecords` (records accepted by the local stream), `IgnoredEvents` (events without a supported DNSTap record in direct batches), `RejectedRecords` (invalid or oversized protobuf records), `DroppedRecords` (records lost following a transport fault), and `FailedBatches` (connection, handshake or write failures). The optional `onSinkCreated` callback on fluent registration lets an application retain the sink for inspecting these counters. Terminal failures and disposal errors are written to Serilog `SelfLog`. When the fluent logger is disposed, the sink reconciles submitted records against written, rejected, ignored, and transport-dropped counts; any remainder is counted as dropped, including native queue overflow. During normal operation, the native queue's silent drops are not immediately observable, and counts do not imply collector receipt or durable storage. With fluent registration, failed transport batches are accounted for and suppressed so Serilog does not purge other queued telemetry. Serilog's built-in retry window is disabled for both fluent methods. TCP is plaintext: use only a trusted or separately protected transport. Successful stream writes do not constitute per-record collector acknowledgments. Disposal completes the STOP handshake for a healthy session; concurrent calls await the same completion and observe its failure. It may block on unresponsive streams. Supplied streams remain open by default (`leaveOpen: true`); file and TCP factories own their streams. File-mode I/O and disposal currently have no timeout guarantee, so use a responsive destination and ensure the caller drains its dispatch queue before disposing. File-mode output flushes the stream at each completed batch and again at normal session shutdown (STOP/flush); this reduces managed-buffer exposure but does not guarantee durable fsync or a complete Frame Streams file after abrupt termination. Files are not automatically rolled or bounded. Rotate by closing the current logger and creating a new file session at a new path.
+var logger = new LoggerConfiguration()
+    .Destructure.AsScalar<global::Dnstap.Dnstap>()
+    .WriteTo.DnstapFile("dns.fstrm")
+    .CreateLogger();
 
-## Performance checks
+var dnsRecord = DnstapRecordFactory.Create(new DnsLogEntry
+{
+    EventType = Message.Types.Type.ClientQuery,
+    ClientAddress = IPAddress.Parse("192.0.2.10"),
+    ServerAddress = IPAddress.Parse("192.0.2.53"),
+    ClientPort = 53000,
+    ServerPort = 53,
+    Transport = SocketProtocol.Udp,
+    Timestamp = DateTimeOffset.UtcNow,
+    QueryPacket = Convert.FromHexString(
+        "000101000001000000000000076578616d706c6503636f6d0000010001")
+});
 
-Run `dotnet run --project benchmarks/Serilog.Sinks.Dnstap.Benchmarks -c Release -- file 20000 128` or substitute `tcp` for `file`. The harness reports records/second, process allocations per record, emitted bytes, and failed batches. It reuses a prebuilt Serilog event to isolate sink/transport overhead; these results do not measure event construction or Serilog's queue. CI exercises each path with 1,000 records, while the manually dispatched **DNSTap benchmarks** workflow measures larger runs and retains outputs. Compare measurements on the same host with repeated runs; do not treat brief shared-runner smoke timings as throughput guarantees.
+logger.ForContext(DnstapEventProperty.Name, dnsRecord)
+    .Information("Observed DNS query");
 
-## Dependency restore
+await ((IAsyncDisposable)logger).DisposeAsync();
+```
 
-This project is intended for internal evaluation and source builds, not external package consumption yet; restoring `Dnstap.NET` requires authenticated access to the DeltaZulu GitHub Packages feed.
+The file must not already exist; `DnstapFile()` refuses to overwrite it by default. Set `overwrite: true` only when replacement is intentional. The parent directory must exist. Each output file contains one Frame Streams session; the sink does not append or rotate files. File batches are flushed to the stream, but an abrupt shutdown may leave the stream without its final STOP frame, and flushing does not guarantee disk durability.
 
-The package includes this README, embedded debugging symbols and git repository metadata. CI packs and restores the local package in an isolated consumer project, then decodes file and TCP records using an independent Go DNSTap implementation. `Dnstap.NET` version `0.1.0` is restored from [GitHub Packages](https://github.com/DeltaZulu-OU/Dnstap.NET/pkgs/nuget/Dnstap.NET). The `NuGet.Config` maps its package ID to the authenticated `deltazulu-github` feed. CI uses a `GITHUB_TOKEN` with `packages: read` and package-level Actions access. For local builds, authenticate with a token carrying `read:packages` and never commit credentials.
+### Send to a TCP collector
 
-## Licensing
+Replace the `WriteTo.DnstapFile(...)` call above with:
 
-This repository is Apache-2.0. Its Dnstap.NET dependency is GPL-3.0-only. Distributing a combined application requires observing the applicable GPL obligations; Apache-2.0 licensing here does not relicense the dependency.
+```csharp
+.WriteTo.DnstapTcp(
+    host: "127.0.0.1",
+    port: 6000,
+    connectionTimeout: TimeSpan.FromSeconds(10),
+    operationTimeout: TimeSpan.FromSeconds(30),
+    reconnectInterval: TimeSpan.FromSeconds(5))
+```
+
+The connection is established on the first eligible DNSTap event, not when constructing the logger. The sink initiates a Frame Streams handshake. After a transport failure, a configured TCP sink may establish a **new** session once the reconnect interval has elapsed. It never replays events that failed or arrived during the outage. An immediately connected or caller-supplied stream cannot reconnect automatically.
+
+### Batching
+
+The fluent extensions use Serilog's native `BatchingOptions`, rather than adding another queue. The default retry window is zero to avoid replaying frames whose delivery is uncertain.
+
+```csharp
+var batching = new BatchingOptions
+{
+    BatchSizeLimit = 128,
+    BufferingTimeLimit = TimeSpan.FromSeconds(1),
+    QueueLimit = 4096,
+    RetryTimeLimit = TimeSpan.Zero
+};
+
+var logger = new LoggerConfiguration()
+    .Destructure.AsScalar<global::Dnstap.Dnstap>()
+    .WriteTo.DnstapFile("dns.fstrm", batchingOptions: batching)
+    .CreateLogger();
+```
+
+The batch size and buffering interval must be positive. A specified queue limit must be positive, and `RetryTimeLimit` must be zero. Unrelated application events are filtered before entering the sink's batching queue. A bounded queue can still discard DNSTap events when full; it does not block the producing thread to guarantee delivery.
+
+**Record lifetime:** Protobuf records are mutable. Do not modify, reuse, or return a record to a pool after logging it. Serilog may serialize it later on its batching worker.
+
+## Monitoring and failure handling
+
+For fluent configuration, retain a reference to the sink through `onSinkCreated`:
+
+```csharp
+DnstapSink? dnstapSink = null;
+
+var logger = new LoggerConfiguration()
+    .Destructure.AsScalar<global::Dnstap.Dnstap>()
+    .WriteTo.DnstapTcp(
+        "127.0.0.1", 6000,
+        onSinkCreated: sink => dnstapSink = sink)
+    .CreateLogger();
+```
+
+The sink exposes the following counters:
+
+| Counter | Meaning |
+| --- | --- |
+| `SubmittedRecords` | Eligible events accepted by fluent registration before Serilog batching |
+| `WrittenRecords` | Records written to the local output stream; **not** collector acknowledgments |
+| `RejectedRecords` | Invalid or oversized protobuf records rejected locally |
+| `IgnoredEvents` | Unsupported events encountered by the direct batched API |
+| `DroppedRecords` | Records lost after transport failures, plus unresolved native queue drops reconciled at logger disposal |
+| `FailedBatches` | Connection, handshake, write, or file-flush failures |
+
+Native batching queue losses are not necessarily visible immediately. `DroppedRecords` is reconciled against submitted records during logger disposal. Diagnostics for transport and shutdown failures are also emitted through Serilog's `SelfLog`. None of these counters guarantees that a collector stored a record.
+
+Invalid DNSTap records are rejected without permanently faulting a healthy session. A failed file or caller-supplied stream is not reopened. Configure application monitoring accordingly.
+
+## Shutdown and direct integration
+
+Dispose the logger after producing the last event so its batching queue can drain and the Frame Streams session can finish. For the global Serilog logger, prefer `await Log.CloseAndFlushAsync()`. Synchronous shutdown can block while file I/O or the TCP STOP/FINISH exchange completes. Caller-provided file streams have no fixed I/O timeout.
+
+Applications that already own batching and dispatch can use `DnstapSink.CreateFile(path)`, `DnstapSink.CreateTcp(host, port)`, or `await DnstapSink.ConnectTcpAsync(host, port)` directly. Call `EmitBatchAsync()`, drain the application's own queue, then `DisposeAsync()`. Avoid adding a second batching queue.
+
+Stream ownership is explicit: direct constructors leave supplied streams open by default (`leaveOpen: true`), while file and TCP factories own their destinations.
+
+## Building from source
+
+Clone this repository, provide authorized credentials for the `deltazulu-github` source defined in `NuGet.Config`, then run:
+
+```shell
+dotnet restore Serilog.Sinks.Dnstap.slnx --configfile NuGet.Config
+dotnet build Serilog.Sinks.Dnstap.slnx -c Release --no-restore
+dotnet test tests/Serilog.Sinks.Dnstap.Tests/Serilog.Sinks.Dnstap.Tests.csproj -c Release --no-restore
+```
+
+A token must have `read:packages` permission and access to the Dnstap.NET package. NuGet authentication is environment-specific; do not commit secrets or credentials to configuration files. See [Dnstap.NET](https://github.com/DeltaZulu-OU/Dnstap.NET) for the protocol library.
+
+## License
+
+Serilog.Sinks.Dnstap is licensed under [Apache-2.0](LICENSE.txt). Its Dnstap.NET dependency is licensed under GPL-3.0-only. Redistributing a combined application requires compliance with the applicable GPL obligations; this repository's Apache-2.0 license does not change the dependency's license.
