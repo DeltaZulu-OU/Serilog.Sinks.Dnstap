@@ -28,8 +28,15 @@ public static class DnstapSinkExtensions
         {
             onSinkCreated?.Invoke(sink);
             return configuration.Conditional(
-                e => DnstapEventProperty.TryGetScalar(e, out var value) &&
-                     value is global::Dnstap.Dnstap,
+                e =>
+                {
+                    if (e.Level < restrictedToMinimumLevel ||
+                        !DnstapEventProperty.TryGetScalar(e, out var value) ||
+                        value is not global::Dnstap.Dnstap)
+                        return false;
+                    sink.RecordSubmission();
+                    return true;
+                },
                 writeTo => writeTo.Sink(sink, options, restrictedToMinimumLevel));
         }
         catch
@@ -98,8 +105,15 @@ public static class DnstapSinkExtensions
         {
             onSinkCreated?.Invoke(sink);
             return configuration.Conditional(
-                e => DnstapEventProperty.TryGetScalar(e, out var value) &&
-                     value is global::Dnstap.Dnstap,
+                e =>
+                {
+                    if (e.Level < restrictedToMinimumLevel ||
+                        !DnstapEventProperty.TryGetScalar(e, out var value) ||
+                        value is not global::Dnstap.Dnstap)
+                        return false;
+                    sink.RecordSubmission();
+                    return true;
+                },
                 writeTo => writeTo.Sink(sink, options, restrictedToMinimumLevel));
         }
         catch
