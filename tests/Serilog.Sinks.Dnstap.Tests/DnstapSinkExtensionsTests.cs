@@ -26,11 +26,20 @@ public sealed class DnstapSinkExtensionsTests
             new() { RetryTimeLimit = TimeSpan.Zero, QueueLimit = 0 }
         };
 
-        foreach (var batching in invalid)
+        for (var i = 0; i < invalid.Length; i++)
         {
             var path = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".fstrm");
-            Assert.ThrowsExactly<ArgumentException>(() =>
-                new LoggerConfiguration().WriteTo.DnstapFile(path, batching));
+            var batching = invalid[i];
+            if (i == 0)
+            {
+                Assert.ThrowsExactly<ArgumentException>(() =>
+                    new LoggerConfiguration().WriteTo.DnstapFile(path, batching));
+            }
+            else
+            {
+                Assert.ThrowsExactly<ArgumentOutOfRangeException>(() =>
+                    new LoggerConfiguration().WriteTo.DnstapFile(path, batching));
+            }
             Assert.IsFalse(File.Exists(path), "Invalid configuration created an output file.");
         }
     }
