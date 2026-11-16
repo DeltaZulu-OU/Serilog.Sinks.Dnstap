@@ -17,6 +17,9 @@
     <IsPackable>true</IsPackable>
   </PropertyGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Serilog.Sinks.Dnstap.Tests" />
+  </ItemGroup>
+  <ItemGroup>
     <PackageReference Include="Serilog" Version="4.4.0" />
     <PackageReference Include="Dnstap.NET" Version="0.1.0" />
     <None Include="../../README.md" Pack="true" PackagePath="/" />
