@@ -1,0 +1,32 @@
+global:
+  worker:
+    interval-monitor: 1
+  trace:
+    verbose: true
+
+pipelines:
+  - name: tcp-in
+    dnstap:
+      listen-ip: 127.0.0.1
+      listen-port: 16055
+      disable-dnsparser: false
+      upstream-batching: false
+    routing-policy:
+      forward: [tcp-out]
+  - name: file-in
+    file-ingestor:
+      enable: true
+      watch-dir: "__ROOT__/tap-watch"
+      watch-mode: dnstap
+    routing-policy:
+      forward: [file-out]
+  - name: tcp-out
+    logfile:
+      file-path: "__ROOT__/tcp.jsonl"
+      mode: json
+      flush-interval: 1
+  - name: file-out
+    logfile:
+      file-path: "__ROOT__/file.jsonl"
+      mode: json
+      flush-interval: 1

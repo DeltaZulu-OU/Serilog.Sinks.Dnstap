@@ -99,6 +99,53 @@ jobs:
             ${{ runner.temp }}/tcp.stderr
           if-no-files-found: warn
 
+
+  dns-collector-interop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Build sink package and restore isolated Serilog consumer
+        run: |
+          dotnet restore src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj --configfile NuGet.Config --locked-mode
+          dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-restore --output artifacts/packages /p:RepositoryCommit=${{ github.sha }}
+          python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
+          dotnet restore tests/PackageConsumer/PackageConsumer.csproj --configfile tests/PackageConsumer/NuGet.Config --packages "${{ runner.temp }}/collector-consumer-cache" --no-http-cache
+      - name: Download and verify pinned DNS-collector v3.3.7
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive="$RUNNER_TEMP/DNS-collector_3.3.7_linux_amd64.tar.gz"
+          curl --fail --location --retry 3 --output "$archive" https://github.com/dmachard/DNS-collector/releases/download/v3.3.7/DNS-collector_3.3.7_linux_amd64.tar.gz
+          echo "7f16a995e3be6d7bb46974722a3f1336cc589fbfff2c2c3c9c57c0b4cbedcbbe  $archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/collector-bin"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/collector-bin"
+          binary="$(find "$RUNNER_TEMP/collector-bin" -type f -name dnscollector -print -quit)"
+          [[ -n "$binary" ]] || { echo "DNS-collector executable not found" >&2; exit 1; }
+          chmod +x "$binary"
+          echo "DNS_COLLECTOR_BINARY=$binary" >> "$GITHUB_ENV"
+      - name: Verify Serilog TCP and file output with DNS-collector
+        shell: bash
+        run: bash .github/interop/check-dns-collector.sh "$RUNNER_TEMP" "$DNS_COLLECTOR_BINARY"
+      - name: Preserve DNS-collector interoperability evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: serilog-dns-collector-evidence
+          path: |
+            ${{ runner.temp }}/collector.yml
+            ${{ runner.temp }}/config-check.log
+            ${{ runner.temp }}/collector.log
+            ${{ runner.temp }}/tcp.jsonl
+            ${{ runner.temp }}/file.jsonl
+            ${{ runner.temp }}/tap-watch/capture.fstrm
+          if-no-files-found: warn
+
   benchmark-smoke:
     runs-on: ubuntu-latest
     timeout-minutes: 10
