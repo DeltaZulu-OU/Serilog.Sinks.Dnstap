@@ -13,7 +13,7 @@ if (args.Length is not (2 or 3) ||
 }
 
 var query = Convert.FromHexString("000101000001000000000000076578616d706c6503636f6d0000010001");
-var dnsRecord = DnstapRecordFactory.Create(new DnsLogEntry
+var dnsRecord = new DnstapRecordFactory("serilog-dnstap-consumer"u8.ToArray()).Create(new DnsLogEntry
 {
     EventType = Message.Types.Type.ClientQuery,
     ClientAddress = IPAddress.Parse("192.0.2.10"),
@@ -24,7 +24,6 @@ var dnsRecord = DnstapRecordFactory.Create(new DnsLogEntry
     Timestamp = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000),
     QueryPacket = query
 });
-dnsRecord.Identity = Google.Protobuf.ByteString.CopyFromUtf8("serilog-dnstap-consumer");
 
 var loggerConfig = new LoggerConfiguration().Destructure.AsScalar<global::Dnstap.Dnstap>();
 if (args[0] == "file")

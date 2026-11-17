@@ -80,6 +80,35 @@ public sealed class DnstapSinkTests
     }
 
     [TestMethod]
+    public async Task Dnstap020FactoryRecordRetainsMetadataAndBothTimestamps()
+    {
+        using var stream = new MemoryStream();
+        await using (var sink = new DnstapSink(stream))
+        {
+            var factory = new global::Dnstap.DnstapRecordFactory("serilog-upgrade"u8.ToArray());
+            var record = factory.Create(new global::Dnstap.DnsLogEntry
+            {
+                EventType = global::Dnstap.Message.Types.Type.ClientResponse,
+                QueryTimestamp = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000),
+                ResponseTimestamp = DateTimeOffset.FromUnixTimeSeconds(1_700_000_001),
+                QueryZone = Convert.FromHexString("076578616d706c6503636f6d00"),
+                ResponsePacket = new byte[] { 0, 0xff, 0xc0, 0x0c }
+            });
+            await sink.EmitBatchAsync(new[] { Event(record) });
+            Assert.AreEqual(1L, sink.WrittenRecords);
+            Assert.AreEqual(0L, sink.RejectedRecords);
+        }
+        var frames = ReadFrames(stream.ToArray());
+        Assert.HasCount(3, frames);
+        var decoded = global::Dnstap.Dnstap.Parser.ParseFrom(frames[1]);
+        Assert.AreEqual("serilog-upgrade", decoded.Identity.ToStringUtf8());
+        Assert.AreEqual(1_700_000_000UL, decoded.Message.QueryTimeSec);
+        Assert.AreEqual(1_700_000_001UL, decoded.Message.ResponseTimeSec);
+        Assert.AreSequenceEqual(Convert.FromHexString("076578616d706c6503636f6d00"), decoded.Message.QueryZone.ToByteArray());
+        Assert.AreSequenceEqual(new byte[] { 0, 0xff, 0xc0, 0x0c }, decoded.Message.ResponseMessage.ToByteArray());
+    }
+
+    [TestMethod]
     public async Task UnrelatedEventsDoNotStartSession()
     {
         using var stream = new MemoryStream();

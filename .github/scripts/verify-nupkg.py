@@ -49,7 +49,7 @@ if os.environ.get("GITHUB_SHA") and repository.attrib.get("commit") != os.enviro
     raise SystemExit("Package repository commit does not match tested source")
 
 deps = elements("dependency")
-for name, version in [("Serilog", "4.4.0"), ("Dnstap.NET", "0.1.0")]:
+for name, version in [("Serilog", "4.4.0"), ("Dnstap.NET", "0.2.0")]:
     matching = [e for e in deps if e.attrib.get("id") == name]
     if len(matching) != 1 or version not in matching[0].attrib.get("version", ""):
         raise SystemExit(f"Missing or unexpected {name} dependency")

@@ -36,8 +36,8 @@
       },
       "Dnstap.NET": {
         "type": "Transitive",
-        "resolved": "0.1.0",
-        "contentHash": "V3+S9hFiF5nCX2vKoSTLaRI+WCto9dfmFIlaTDR1gyT+P+PNuHi27SPqcwvOEh8J9Fp1WNY5/qNCzmgQUzs3jw==",
+        "resolved": "0.2.0",
+        "contentHash": "YfpZAFXyZrybaHLow9yy/Zzf24IvQzFlICWkh2sZ+rUxwpWjnffFdxFdPIdaM24aC5XNTFVFxv6B1kpKw21dbw==",
         "dependencies": {
           "Google.Protobuf": "3.36.2"
         }
@@ -113,7 +113,7 @@
       "serilog.sinks.dnstap": {
         "type": "Project",
         "dependencies": {
-          "Dnstap.NET": "[0.1.0, )",
+          "Dnstap.NET": "[0.2.0, )",
           "Serilog": "[4.4.0, )"
         }
       }

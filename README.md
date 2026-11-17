@@ -7,7 +7,7 @@ A [Serilog](https://serilog.net/) sink for forwarding DNS observations in the [D
 ## Requirements
 
 - .NET 10.
-- Serilog 4.x and Dnstap.NET 0.1.0 (resolved through the project dependencies).
+- Serilog 4.x and Dnstap.NET 0.2.0 (resolved through the project dependencies).
 - For TCP forwarding, a DNSTap-compatible Frame Streams collector. The TCP connection is unencrypted; use a trusted network or an independently protected transport.
 - For local source builds, authorized `read:packages` access to the DeltaZulu GitHub Packages NuGet feed. Do not store access tokens in the repository.
 
@@ -28,7 +28,7 @@ var logger = new LoggerConfiguration()
     .WriteTo.DnstapTcp("127.0.0.1", 6000)
     .CreateLogger();
 
-var dnsRecord = DnstapRecordFactory.Create(new DnsLogEntry
+var dnsRecord = new DnstapRecordFactory().Create(new DnsLogEntry
 {
     EventType = Message.Types.Type.ClientQuery,
     ClientAddress = IPAddress.Parse("192.0.2.10"),
@@ -47,7 +47,7 @@ logger.ForContext(DnstapEventProperty.Name, dnsRecord)
 await ((IAsyncDisposable)logger).DisposeAsync();
 ```
 
-The connection is established on the first eligible DNSTap event, not when constructing the logger. The sink initiates a Frame Streams handshake. After a transport failure, a configured TCP sink may establish a **new** session once the reconnect interval has elapsed (five seconds by default). A new eligible record triggers the next connection attempt; the sink does not reconnect in the background when idle. It never replays events that failed or arrived during the outage. An immediately connected or caller-supplied stream cannot reconnect automatically. Configure `connectionTimeout`, `operationTimeout`, and `reconnectInterval` on `DnstapTcp()` when necessary.
+The connection is established on the first eligible DNSTap event, not when constructing the logger. Dnstap.NET 0.2.0 uses an instance-based `DnstapRecordFactory`; the old static `Create` API is unavailable. The sink initiates a Frame Streams handshake. After a transport failure, a configured TCP sink may establish a **new** session once the reconnect interval has elapsed (five seconds by default). A new eligible record triggers the next connection attempt; the sink does not reconnect in the background when idle. It never replays events that failed or arrived during the outage. An immediately connected or caller-supplied stream cannot reconnect automatically. Configure `connectionTimeout`, `operationTimeout`, and `reconnectInterval` on `DnstapTcp()` when necessary.
 
 ### Write to a file
 

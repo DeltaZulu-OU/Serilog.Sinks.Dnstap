@@ -13,7 +13,7 @@ namespace Serilog.Sinks.Dnstap;
 public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDisposable
 {
     private global::Dnstap.DnstapWriter? _writer;
-    private readonly Stream? _fileStream;
+    private readonly bool _flushFileBatches;
     private readonly string? _tcpHost;
     private readonly int _tcpPort;
     private readonly TimeSpan? _operationTimeout;
@@ -31,7 +31,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private long _rejectedRecords;
     private long _droppedRecords;
     private long _submittedRecords;
-    // Mirrors Dnstap.NET 0.1.0's default maximum Frame Streams DATA length.
+    // Matches Dnstap.NET 0.2.0's default maximum Frame Streams DATA payload length.
     private const int MaximumFrameDataLength = 96 * 1024;
     private readonly object _disposeSync = new();
     private Task? _disposeTask;
@@ -71,7 +71,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         bool leaveOpen = true, TimeSpan? operationTimeout = null)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        _fileStream = mode == global::Dnstap.DnstapStreamMode.File ? stream : null;
+        _flushFileBatches = mode == global::Dnstap.DnstapStreamMode.File;
         _writer = new global::Dnstap.DnstapWriter(stream, mode,
             leaveOpen: leaveOpen, operationTimeout: operationTimeout);
     }
@@ -242,7 +242,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                 }
 
                 // These are the exact pre-I/O validity conditions enforced by
-                // Dnstap.NET 0.1.0's WriteAsync with its default frame limit.
+                // Dnstap.NET 0.2.0's WriteAsync with its default frame limit.
                 // Do not classify exceptions raised by a stream as harmless errors.
                 var candidate = record!;
                 if (!candidate.IsInitialized() ||
@@ -292,14 +292,13 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
                 }
             }
 
-            // Dnstap.NET flushes on STOP, but a long-lived Serilog file sink
-            // must also release FileStream's managed buffer after each batch.
+            // Flush through the writer so buffering remains synchronized with DATA and STOP.
             // This does not provide an fsync guarantee or append a STOP frame.
-            if (_fileStream is not null && _started)
+            if (_flushFileBatches && _started)
             {
                 try
                 {
-                    await _fileStream.FlushAsync().ConfigureAwait(false);
+                    await _writer!.FlushAsync().ConfigureAwait(false);
                 }
                 catch (Exception ex)
                 {
