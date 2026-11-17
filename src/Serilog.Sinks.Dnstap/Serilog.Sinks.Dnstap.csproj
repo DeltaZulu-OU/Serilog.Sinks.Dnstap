@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <PackageId>Serilog.Sinks.Dnstap</PackageId>
-    <Version>0.1.0</Version>
     <Authors>DeltaZulu OÜ</Authors>
     <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
     <PackageProjectUrl>https://github.com/DeltaZulu-OU/Serilog.Sinks.Dnstap</PackageProjectUrl>

@@ -10,7 +10,12 @@ if len(sys.argv) != 2:
     raise SystemExit("Usage: verify-nupkg.py PACKAGE.nupkg")
 
 path = pathlib.Path(sys.argv[1])
-expected = "Serilog.Sinks.Dnstap.0.1.0.nupkg"
+props = pathlib.Path(__file__).resolve().parents[2] / "Directory.Build.props"
+versions = [e.text.strip() for e in ET.parse(props).iter("Version") if e.text and e.text.strip()]
+if len(versions) != 1:
+    raise SystemExit("Expected one Version in Directory.Build.props")
+version = versions[0]
+expected = f"Serilog.Sinks.Dnstap.{version}.nupkg"
 if path.name != expected:
     raise SystemExit(f"Expected {expected}, got {path.name}")
 
@@ -32,7 +37,7 @@ def single(name):
 
 for name, expected_value in [
     ("id", "Serilog.Sinks.Dnstap"),
-    ("version", "0.1.0"),
+    ("version", version),
     ("readme", "README.md")
 ]:
     if single(name).text != expected_value:

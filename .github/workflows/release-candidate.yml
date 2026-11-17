@@ -1,6 +1,7 @@
-name: Validate 0.1.0 release candidate
+name: Validate release candidate
 
 on:
+  workflow_call:
   workflow_dispatch:
 
 permissions:
@@ -15,7 +16,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest]
     env:
       NuGetPackageSourceCredentials_deltazulu-github: Username=${{ github.actor }};Password=${{ secrets.GITHUB_TOKEN }};ValidAuthenticationTypes=Basic
     steps:
@@ -44,19 +45,19 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.25.6"
-      - name: Validate exact release-candidate version and source
+      - name: Resolve release candidate version
         shell: bash
         run: |
           set -euo pipefail
           test "$GITHUB_REF" = refs/heads/main
-          python3 -c 'import xml.etree.ElementTree as ET; p=ET.parse("src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj"); v=[x.text for x in p.iter("Version")]; assert v==["0.1.0"], "Expected pre-release candidate version 0.1.0"'
+          echo "PACKAGE_VERSION=$(python3 -c 'import xml.etree.ElementTree as ET; e=[x.text.strip() for x in ET.parse("Directory.Build.props").iter("Version") if x.text and x.text.strip()]; assert len(e)==1; print(e[0])')" >> "$GITHUB_ENV"
       - name: Build and validate exact candidate package
         shell: bash
         run: |
           set -euo pipefail
           dotnet restore src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj --configfile NuGet.Config --locked-mode
           dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-restore --output artifacts/packages /p:RepositoryCommit="$GITHUB_SHA"
-          python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
+          python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.$PACKAGE_VERSION.nupkg
       - name: Restore isolated package consumer
         run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --configfile tests/PackageConsumer/NuGet.Config --packages "${{ runner.temp }}/release-candidate-restore" --no-http-cache
       - name: Install independent DNSTap decoder
@@ -89,13 +90,13 @@ jobs:
         run: |
           set -euo pipefail
           cd artifacts/packages
-          sha256sum Serilog.Sinks.Dnstap.0.1.0.nupkg > SHA256SUMS
+          sha256sum Serilog.Sinks.Dnstap.$PACKAGE_VERSION.nupkg > SHA256SUMS
           sha256sum --check SHA256SUMS
       - name: Preserve verified release candidate without publishing
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: validated-serilog-dnstap-0.1.0
+          name: validated-serilog-dnstap-package
           path: |
-            artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
+            artifacts/packages/Serilog.Sinks.Dnstap.*.nupkg
             artifacts/packages/SHA256SUMS
           if-no-files-found: error

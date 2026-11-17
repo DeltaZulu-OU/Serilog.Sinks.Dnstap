@@ -1,0 +1,144 @@
+name: Publish Serilog DNSTap package
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: serilog-dnstap-release
+  cancel-in-progress: false
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+    outputs:
+      package_version: ${{ steps.version.outputs.package_version }}
+    steps:
+      - name: Require main
+        env:
+          REF: ${{ github.ref }}
+        run: test "$REF" = refs/heads/main
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: version
+        name: Read package version and check existing tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(python3 -c 'import xml.etree.ElementTree as ET; e=[x.text.strip() for x in ET.parse("Directory.Build.props").iter("Version") if x.text and x.text.strip()]; assert len(e)==1; print(e[0])')"
+          tag="v$version"
+          if git show-ref --verify --quiet "refs/tags/$tag"; then
+            test "$(git rev-list -n 1 "$tag")" = "$(git rev-parse HEAD)" || { echo "Tag $tag points to a different commit" >&2; exit 1; }
+          fi
+          echo "package_version=$version" >> "$GITHUB_OUTPUT"
+
+  release-candidate:
+    needs: validate-version
+    uses: ./.github/workflows/release-candidate.yml
+    permissions:
+      contents: read
+      packages: read
+
+  publish:
+    needs: [validate-version, release-candidate]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      PACKAGE_DIR: ${{ github.workspace }}/artifacts/packages
+      PACKAGE_VERSION: ${{ needs.validate-version.outputs.package_version }}
+      RELEASE_TAG: v${{ needs.validate-version.outputs.package_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          global-json-file: global.json
+      - name: Retrieve the tested candidate without rebuilding
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: validated-serilog-dnstap-package
+          path: ${{ env.PACKAGE_DIR }}
+      - name: Verify package and recorded SHA-256 digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd "$PACKAGE_DIR" && test "$(wc -l < SHA256SUMS)" -eq 1 && sha256sum --check SHA256SUMS)
+          python3 .github/scripts/verify-nupkg.py "$PACKAGE_DIR/Serilog.Sinks.Dnstap.$PACKAGE_VERSION.nupkg"
+      - name: Configure temporary authenticated NuGet source
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/release.nuget.config" <<'XML'
+          <configuration>
+            <packageSources>
+              <clear />
+              <add key="nuget.org" value="https://api.nuget.org/v3/index.json" />
+              <add key="deltazulu-github" value="https://nuget.pkg.github.com/DeltaZulu-OU/index.json" />
+            </packageSources>
+            <packageSourceMapping>
+              <packageSource key="nuget.org"><package pattern="*" /></packageSource>
+              <packageSource key="deltazulu-github">
+                <package pattern="Serilog.Sinks.Dnstap" />
+                <package pattern="Dnstap.NET" />
+              </packageSource>
+            </packageSourceMapping>
+          </configuration>
+          XML
+          dotnet nuget update source deltazulu-github --username "$GITHUB_ACTOR" --password "$GH_TOKEN" --store-password-in-clear-text --configfile "$RUNNER_TEMP/release.nuget.config"
+      - name: Publish exact validated NuGet package
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet nuget push "$PACKAGE_DIR/Serilog.Sinks.Dnstap.$PACKAGE_VERSION.nupkg" --source deltazulu-github --configfile "$RUNNER_TEMP/release.nuget.config" --api-key "$GH_TOKEN" --skip-duplicate
+      - name: Verify a clean registry-backed package restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          export NUGET_PACKAGES="$RUNNER_TEMP/registry-cache"
+          dotnet restore tests/PackageConsumer/PackageConsumer.csproj --configfile "$RUNNER_TEMP/release.nuget.config" --packages "$NUGET_PACKAGES" --no-http-cache
+          cmp "$PACKAGE_DIR/Serilog.Sinks.Dnstap.$PACKAGE_VERSION.nupkg" "$NUGET_PACKAGES/serilog.sinks.dnstap/$PACKAGE_VERSION/serilog.sinks.dnstap.$PACKAGE_VERSION.nupkg"
+          dotnet run --project tests/PackageConsumer/PackageConsumer.csproj -c Release --no-restore -- file "$RUNNER_TEMP/registry-check.fstrm"
+          test -s "$RUNNER_TEMP/registry-check.fstrm"
+      - name: Create or verify release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git show-ref --verify --quiet refs/tags/"$RELEASE_TAG"; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
+          else
+            git tag -a "$RELEASE_TAG" -m "Release $RELEASE_TAG"
+            git push origin "$RELEASE_TAG"
+          fi
+      - name: Publish and verify GitHub Release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          package="Serilog.Sinks.Dnstap.$PACKAGE_VERSION.nupkg"
+          metadata="$RUNNER_TEMP/release.json"
+          status="$(curl --silent --show-error --output "$metadata" --write-out '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" "https://api.github.com/repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG")"
+          case "$status" in
+            200)
+              jq -e --arg tag "$RELEASE_TAG" '.tag_name == $tag and .draft == false and (.assets | type == "array")' "$metadata"
+              for asset in "$package" SHA256SUMS; do
+                count="$(jq -r --arg filename "$asset" '[.assets[] | select(.name == $filename)] | length' "$metadata")"
+                if [ "$count" -gt 1 ]; then echo "Duplicate GitHub Release asset: $asset" >&2; exit 1; fi
+                if [ "$count" -eq 0 ]; then gh release upload "$RELEASE_TAG" "$PACKAGE_DIR/$asset"; fi
+              done
+              ;;
+            404) gh release create "$RELEASE_TAG" --verify-tag --title "$RELEASE_TAG" --generate-notes "$PACKAGE_DIR/$package" "$PACKAGE_DIR/SHA256SUMS" ;;
+            *) echo "GitHub Release lookup returned HTTP $status" >&2; exit 1 ;;
+          esac
+          mkdir -p "$RUNNER_TEMP/release-verify"
+          gh release download "$RELEASE_TAG" --pattern "$package" --pattern SHA256SUMS --dir "$RUNNER_TEMP/release-verify"
+          cmp "$PACKAGE_DIR/$package" "$RUNNER_TEMP/release-verify/$package"
+          cmp "$PACKAGE_DIR/SHA256SUMS" "$RUNNER_TEMP/release-verify/SHA256SUMS"
+          (cd "$RUNNER_TEMP/release-verify" && sha256sum --check SHA256SUMS)

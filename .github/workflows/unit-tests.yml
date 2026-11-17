@@ -57,7 +57,7 @@ jobs:
           dotnet restore src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj --configfile NuGet.Config --locked-mode
           dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-restore --output artifacts/packages /p:RepositoryCommit=${{ github.sha }}
       - name: Validate NuGet metadata and dependencies
-        run: python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
+        run: python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.*.nupkg
       - name: Restore isolated consumer from local candidate
         run: dotnet restore tests/PackageConsumer/PackageConsumer.csproj --configfile tests/PackageConsumer/NuGet.Config --packages "${{ runner.temp }}/package-consumer-cache" --no-http-cache
       - name: Install independent Go dnstap reader
@@ -114,7 +114,7 @@ jobs:
         run: |
           dotnet restore src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj --configfile NuGet.Config --locked-mode
           dotnet pack src/Serilog.Sinks.Dnstap/Serilog.Sinks.Dnstap.csproj -c Release --no-restore --output artifacts/packages /p:RepositoryCommit=${{ github.sha }}
-          python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.0.1.0.nupkg
+          python3 .github/scripts/verify-nupkg.py artifacts/packages/Serilog.Sinks.Dnstap.*.nupkg
           dotnet restore tests/PackageConsumer/PackageConsumer.csproj --configfile tests/PackageConsumer/NuGet.Config --packages "${{ runner.temp }}/collector-consumer-cache" --no-http-cache
       - name: Download and verify pinned DNS-collector v3.3.7
         shell: bash

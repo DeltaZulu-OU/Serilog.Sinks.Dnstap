@@ -3,6 +3,6 @@
     <OutputType>Exe</OutputType>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="Serilog.Sinks.Dnstap" Version="0.1.0" />
+    <PackageReference Include="Serilog.Sinks.Dnstap" Version="$(Version)" />
   </ItemGroup>
 </Project>
