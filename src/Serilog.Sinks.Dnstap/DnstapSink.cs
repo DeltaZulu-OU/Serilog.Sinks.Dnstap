@@ -19,7 +19,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private readonly TimeSpan? _operationTimeout;
     private readonly TimeSpan _connectionTimeout;
     private readonly TimeSpan _reconnectInterval;
-    private DateTimeOffset _reconnectAfter;
+    private long _lastFailureTimestamp;
+    private readonly TimeProvider _timeProvider;
     private static readonly TimeSpan DefaultConnectionTimeout = TimeSpan.FromSeconds(10);
     private readonly SemaphoreSlim _gate = new(1, 1);
     private int _disposed;
@@ -31,12 +32,14 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     private long _rejectedRecords;
     private long _droppedRecords;
     private long _submittedRecords;
+    private long _misconfiguredEvents;
+    private int _misconfigurationLogged;
     // Matches Dnstap.NET 0.2.0's default maximum Frame Streams DATA payload length.
     private const int MaximumFrameDataLength = 96 * 1024;
     private readonly object _disposeSync = new();
     private Task? _disposeTask;
     // Fluent batching must not observe transport failures as retriable batch faults:
-    // Serilog 4.3 can discard its entire queue when RetryTimeLimit is zero.
+    // Serilog 4.4.0 can discard its entire queue when RetryTimeLimit is zero.
     internal bool SuppressTransportExceptions { get; set; }
 
     internal void RecordSubmission() => Interlocked.Increment(ref _submittedRecords);
@@ -50,10 +53,13 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     /// <summary>DNSTap records rejected locally before I/O (invalid protobuf or oversized).</summary>
     public long RejectedRecords => Interlocked.Read(ref _rejectedRecords);
 
-    /// <summary>Eligible records submitted by the fluent Serilog API before native batching.</summary>
+    /// <summary>Typed DNSTap properties submitted by the fluent Serilog API before native batching.</summary>
     public long SubmittedRecords => Interlocked.Read(ref _submittedRecords);
 
-    /// <summary>Records not forwarded due to transport faults or inferred native queue drops at shutdown.</summary>
+    /// <summary>Events with a DnstapRecord property that was not captured as a typed DNSTap scalar.</summary>
+    public long MisconfiguredEvents => Interlocked.Read(ref _misconfiguredEvents);
+
+    /// <summary>Valid records not forwarded due to transport faults or inferred native queue drops at shutdown.</summary>
     public long DroppedRecords => Interlocked.Read(ref _droppedRecords);
 
     /// <summary>Batches that failed during connection, handshake or write.</summary>
@@ -73,12 +79,15 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         ArgumentNullException.ThrowIfNull(stream);
         _flushFileBatches = mode == global::Dnstap.DnstapStreamMode.File;
         _writer = new global::Dnstap.DnstapWriter(stream, mode,
-            leaveOpen: leaveOpen, operationTimeout: operationTimeout);
+            leaveOpen: leaveOpen, maxDataLength: MaximumFrameDataLength,
+            operationTimeout: operationTimeout);
+        _timeProvider = TimeProvider.System;
     }
 
     private DnstapSink(string host, int port, TimeSpan connectionTimeout, TimeSpan? operationTimeout,
-        TimeSpan reconnectInterval)
+        TimeSpan reconnectInterval, TimeProvider? timeProvider = null)
     {
+        _timeProvider = timeProvider ?? TimeProvider.System;
         _tcpHost = host;
         _tcpPort = port;
         _connectionTimeout = connectionTimeout;
@@ -120,7 +129,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         return new DnstapSink(host, port, deadline, operationTimeout, interval);
     }
 
-    /// <summary>Opens a new Frame Streams file, refusing to replace existing data by default.</summary>
+    /// <summary>Opens a new Frame Streams file, replacing existing data by default.</summary>
     /// <param name="path">Destination file; parent directory must already exist.</param>
     /// <param name="overwrite">Replace an existing file by default; set false to require a new file. Never appends a second session.</param>
     public static DnstapSink CreateFile(string path, bool overwrite = true)
@@ -154,7 +163,11 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         return new DnstapSink(writer);
     }
 
-    private DnstapSink(global::Dnstap.DnstapWriter writer) => _writer = writer;
+    private DnstapSink(global::Dnstap.DnstapWriter writer)
+    {
+        _writer = writer;
+        _timeProvider = TimeProvider.System;
+    }
 
     private static async Task<global::Dnstap.DnstapWriter> OpenTcpWriterAsync(
         string host, int port, TimeSpan connectionTimeout,
@@ -179,7 +192,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
             // The owned NetworkStream closes the socket when the writer is disposed.
             return new global::Dnstap.DnstapWriter(client.GetStream(),
                 global::Dnstap.DnstapStreamMode.Duplex,
-                leaveOpen: false, operationTimeout: operationTimeout);
+                leaveOpen: false, maxDataLength: MaximumFrameDataLength,
+                operationTimeout: operationTimeout);
         }
         catch
         {
@@ -221,7 +235,8 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         if (!_faulted)
             return true;
 
-        if (_tcpHost is null || DateTimeOffset.UtcNow < _reconnectAfter)
+        if (_tcpHost is null ||
+            _timeProvider.GetElapsedTime(_lastFailureTimestamp) < _reconnectInterval)
         {
             CountDropped(batch);
             return false;
@@ -246,25 +261,56 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         return true;
     }
 
+    private enum RecordKind { Ignored, Rejected, Eligible }
+
+    private static RecordKind Classify(LogEvent logEvent, out global::Dnstap.Dnstap? record)
+    {
+        record = null;
+        if (!DnstapEventProperty.TryGetScalar(logEvent, out var value) ||
+            value is not global::Dnstap.Dnstap candidate ||
+            candidate.Type != global::Dnstap.Dnstap.Types.Type.Message)
+            return RecordKind.Ignored;
+
+        if (!IsValidRecord(candidate))
+            return RecordKind.Rejected;
+
+        record = candidate;
+        return RecordKind.Eligible;
+    }
+
     private async Task<bool> EmitRecordsAsync(IReadOnlyList<LogEvent> events)
     {
         for (var i = 0; i < events.Count; i++)
         {
-            if (!DnstapEventProperty.TryGetRecord(events[i], out var record))
+            var kind = Classify(events[i], out var candidate);
+            if (kind != RecordKind.Eligible)
             {
-                Interlocked.Increment(ref _ignoredEvents);
+                CountNonEligible(kind);
                 continue;
             }
 
-            if (!IsValidRecord(record!))
+            // Own an immutable snapshot for serialization; callers must not mutate
+            // a record concurrently with capture. The writer has the same frame cap.
+            global::Dnstap.Dnstap snapshot;
+            try
+            {
+                snapshot = candidate!.Clone();
+                if (!IsValidRecord(snapshot))
+                {
+                    Interlocked.Increment(ref _rejectedRecords);
+                    continue;
+                }
+            }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
             {
                 Interlocked.Increment(ref _rejectedRecords);
+                SelfLog.WriteLine("DNSTap record could not be copied: {0}", ex);
                 continue;
             }
 
             try
             {
-                await WriteRecordAsync(record!).ConfigureAwait(false);
+                await WriteRecordAsync(snapshot).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -278,12 +324,20 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         return true;
     }
 
-    // Keep pre-I/O checks separate from transport exceptions: invalid records are not faults.
     private static bool IsValidRecord(global::Dnstap.Dnstap record) =>
         record.IsInitialized() &&
         Enum.IsDefined(record.Type) &&
-        Enum.IsDefined(record.Message.Type) &&
+        record.Message is { } message &&
+        Enum.IsDefined(message.Type) &&
         record.CalculateSize() is >= 1 and <= MaximumFrameDataLength;
+
+    private void CountNonEligible(RecordKind kind)
+    {
+        if (kind == RecordKind.Ignored)
+            Interlocked.Increment(ref _ignoredEvents);
+        else if (kind == RecordKind.Rejected)
+            Interlocked.Increment(ref _rejectedRecords);
+    }
 
     private async Task WriteRecordAsync(global::Dnstap.Dnstap record)
     {
@@ -304,18 +358,26 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
     {
         _faulted = true;
         if (_tcpHost is not null)
-            _reconnectAfter = DateTimeOffset.UtcNow.Add(_reconnectInterval);
+            _lastFailureTimestamp = _timeProvider.GetTimestamp();
 
         Interlocked.Increment(ref _failedBatches);
         Interlocked.Increment(ref _droppedRecords);
-        for (var i = failedIndex + 1; i < events.Count; i++)
-        {
-            if (IsDnstapCandidate(events[i]))
-                Interlocked.Increment(ref _droppedRecords);
-        }
+        CountUnprocessed(events, failedIndex + 1);
 
         SelfLog.WriteLine("DNSTap sink entered terminal failure after {0} locally written records: {1}",
             WrittenRecords, ex);
+    }
+
+    private void CountUnprocessed(IReadOnlyList<LogEvent> events, int startIndex)
+    {
+        for (var i = startIndex; i < events.Count; i++)
+        {
+            var kind = Classify(events[i], out _);
+            if (kind == RecordKind.Eligible)
+                Interlocked.Increment(ref _droppedRecords);
+            else
+                CountNonEligible(kind);
+        }
     }
 
     // Flushing the writer keeps file DATA and STOP synchronized, but is not an fsync.
@@ -338,17 +400,29 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         }
     }
 
-    private static bool IsDnstapCandidate(LogEvent logEvent) =>
-        DnstapEventProperty.TryGetScalar(logEvent, out var value) &&
-        value is global::Dnstap.Dnstap;
-
     private void CountDropped(IReadOnlyCollection<LogEvent> batch)
     {
-        foreach (var logEvent in batch)
+        var events = batch as IReadOnlyList<LogEvent> ?? batch.ToArray();
+        CountUnprocessed(events, 0);
+    }
+
+    internal bool AcceptTypedEvent(LogEvent logEvent)
+    {
+        if (DnstapEventProperty.TryGetScalar(logEvent, out var value) &&
+            value is global::Dnstap.Dnstap)
         {
-            if (IsDnstapCandidate(logEvent))
-                Interlocked.Increment(ref _droppedRecords);
+            RecordSubmission();
+            return true;
         }
+
+        if (logEvent.Properties.ContainsKey(DnstapEventProperty.Name))
+        {
+            Interlocked.Increment(ref _misconfiguredEvents);
+            if (Interlocked.Exchange(ref _misconfigurationLogged, 1) == 0)
+                SelfLog.WriteLine("DNSTap expected a raw DnstapRecord scalar. Configure Destructure.AsScalar<Dnstap.Dnstap>() before logging.");
+        }
+
+        return false;
     }
 
     /// <inheritdoc />
@@ -392,7 +466,7 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         }
         finally
         {
-            // Serilog 4.3's native bounded batching queue drops on a failed
+            // Serilog 4.4.0's native bounded batching queue drops on a failed
             // TryWrite() without calling the target sink or reporting the drop.
             // After the batching wrapper has drained at logger shutdown, infer
             // any unaccounted-for submitted records instead of losing the evidence.

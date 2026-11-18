@@ -8,7 +8,7 @@ A [Serilog](https://serilog.net/) sink that forwards typed DNS observations as [
 - Access to the authenticated DeltaZulu GitHub Packages feed for the sink and its `Dnstap.NET` dependency (`read:packages`). The repository's `NuGet.Config` illustrates source mapping.
 - A trusted network or independently protected transport: this sink does not encrypt TCP connections.
 
-Do not commit package-feed credentials.
+Do not commit package-feed credentials. For privacy, use a dedicated logger for DNSTap rather than attaching `DnstapRecord` to an application logger with other sinks. Other sinks can serialize the DNS record (including addresses and packet data). A sub-logger alone does not remove properties from sibling sinks; isolate the DNS event stream or explicitly exclude these events from other outputs.
 
 ## Send records to a TCP collector
 
@@ -44,7 +44,7 @@ logger.ForContext(DnstapEventProperty.Name, record)
 await ((IAsyncDisposable)logger).DisposeAsync();
 ```
 
-The sink connects on the first eligible event. After a TCP failure, a later event can reopen a session once the reconnect interval has elapsed (five seconds by default). Failed records are **not replayed**. Configure `connectionTimeout`, `operationTimeout` and `reconnectInterval` on `DnstapTcp()` if required.
+The sink connects on the first eligible event. After a TCP failure, a later event can reopen a session once the reconnect interval has elapsed (five seconds by default). The cooldown uses monotonic elapsed time, unaffected by wall-clock adjustments. Failed records are **not replayed**. Configure `connectionTimeout`, `operationTimeout` and `reconnectInterval` on `DnstapTcp()` if required.
 
 Records are mutable protobuf objects. Do not modify or reuse one after logging it: Serilog may serialize it asynchronously.
 
@@ -89,16 +89,17 @@ var logger = new LoggerConfiguration()
 
 | Counter | Meaning |
 | --- | --- |
-| `SubmittedRecords` | Eligible records submitted through the fluent API |
+| `SubmittedRecords` | Typed DNSTap properties submitted through the fluent API |
 | `WrittenRecords` | Frames accepted by the local output stream |
-| `RejectedRecords` | Invalid or oversized records rejected before I/O |
-| `IgnoredEvents` | Unsupported events encountered by direct batch calls |
-| `DroppedRecords` | Failed records and inferred native batching queue losses |
+| `RejectedRecords` | Invalid or oversized MESSAGE records rejected before I/O |
+| `IgnoredEvents` | Unrelated events or unsupported DNSTap event kinds processed by the sink |
+| `DroppedRecords` | Eligible records lost after transport faults or inferred native queue losses |
 | `FailedBatches` | Connection, handshake or write/flush failures |
+| `MisconfiguredEvents` | Events filtered because `DnstapRecord` was not captured as a typed scalar |
 
-Some queue drops are counted only at shutdown. Enable Serilog `SelfLog` for transport diagnostics. Failed file and caller-supplied streams cannot automatically reconnect.
+The first incorrectly captured `DnstapRecord` property also produces a Serilog `SelfLog` diagnostic. Some queue drops are counted only at shutdown. Enable Serilog `SelfLog` for transport diagnostics. Failed file and caller-supplied streams cannot automatically reconnect.
 
-Dispose or asynchronously close the logger after the final event (for global logging, `await Log.CloseAndFlushAsync()`). This drains queued events and completes the Frame Streams session. Synchronous disposal may block on I/O. Applications with their own batching can directly use `DnstapSink.CreateTcp()`, `ConnectTcpAsync()`, `CreateFile()`, `EmitBatchAsync()` and `DisposeAsync()`. Caller-supplied streams remain open by default; factory-created destinations are owned by the sink.
+Dispose or asynchronously close the logger after the final event (for global logging, `await Log.CloseAndFlushAsync()`). This drains queued events and completes the Frame Streams session. Synchronous disposal may block on I/O. For TCP, the default per-operation deadline is 30 seconds (set `operationTimeout` for a lower deadline); this is not a single end-to-end shutdown budget. File-mode and caller-provided streams can block indefinitely. Applications requiring strict process-exit deadlines must enforce their own shutdown policy. Applications with their own batching can directly use `DnstapSink.CreateTcp()`, `ConnectTcpAsync()`, `CreateFile()`, `EmitBatchAsync()` and `DisposeAsync()`. Caller-supplied streams remain open by default; factory-created destinations are owned by the sink.
 
 ## Build from source
 

@@ -533,6 +533,51 @@ public sealed class DnstapTcpTests
         }
     }
 
+
+    [TestMethod]
+    public async Task CollectorThatNeverSendsFinishDoesNotBlockBeyondOperationDeadline()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var releaseCollector = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+            var collector = Task.Run(async () =>
+            {
+                using var accepted = await listener.AcceptTcpClientAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+                using var stream = accepted.GetStream();
+                var ready = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(4u, BinaryPrimitives.ReadUInt32BigEndian(ready.Payload));
+                await SendControlAsync(stream, 1);
+                var start = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(2u, BinaryPrimitives.ReadUInt32BigEndian(start.Payload));
+                var data = await ReceiveFrameAsync(stream);
+                Assert.IsFalse(data.IsControl);
+                var stop = await ReceiveFrameAsync(stream);
+                Assert.AreEqual(3u, BinaryPrimitives.ReadUInt32BigEndian(stop.Payload));
+
+                // Simulate a connected collector that withholds FINISH.
+                await releaseCollector.Task;
+            });
+
+            var sink = DnstapSink.CreateTcp("127.0.0.1", port,
+                operationTimeout: TimeSpan.FromSeconds(1));
+            await sink.EmitBatchAsync(new[] { ResponseEvent() })
+                .WaitAsync(TimeSpan.FromSeconds(5));
+            await Assert.ThrowsExactlyAsync<TimeoutException>(
+                () => sink.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+            releaseCollector.SetResult();
+            await collector.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            releaseCollector.TrySetResult();
+            listener.Stop();
+        }
+    }
+
     [TestMethod]
     public void FluentTcpConfigurationRejectsReplayAndInvalidTimeouts()
     {

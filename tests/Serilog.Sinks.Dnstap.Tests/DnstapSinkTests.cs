@@ -127,12 +127,13 @@ public sealed class DnstapSinkTests
         var sink = new DnstapSink(stream);
         var invalid = Record();
         invalid.Message.Type = (global::Dnstap.Message.Types.Type)int.MaxValue;
-        // Unknown message kinds are filtered, not forwarded and not treated as I/O faults.
+        // Unknown message kinds are rejected before I/O without faulting the session.
         await sink.EmitBatchAsync(new[] { Event(invalid) });
         await sink.EmitBatchAsync(new[] { Event(Record()) });
         await sink.DisposeAsync();
         Assert.HasCount(3, ReadFrames(stream.ToArray()));
-        Assert.AreEqual(1L, sink.IgnoredEvents);
+        Assert.AreEqual(1L, sink.RejectedRecords);
+        Assert.AreEqual(0L, sink.IgnoredEvents);
         Assert.AreEqual(1L, sink.WrittenRecords);
     }
 
@@ -165,6 +166,72 @@ public sealed class DnstapSinkTests
         Assert.AreEqual(1L, sink.RejectedRecords);
         Assert.AreEqual(1L, sink.WrittenRecords);
         Assert.AreEqual(0L, sink.FailedBatches);
+    }
+
+
+    [TestMethod]
+    public void FluentSinkReportsMissingScalarDestructuring()
+    {
+        DnstapSink? captured = null;
+        using (var logger = new LoggerConfiguration()
+            .WriteTo.DnstapTcp("127.0.0.1", 6000, onSinkCreated: s => captured = s)
+            .CreateLogger())
+        {
+            logger.ForContext(DnstapEventProperty.Name, Record())
+                .Information("Unconfigured DNSTap capture");
+        }
+
+        Assert.IsNotNull(captured);
+        Assert.AreEqual(1L, captured.MisconfiguredEvents);
+        Assert.AreEqual(0L, captured.SubmittedRecords);
+        Assert.AreEqual(0L, captured.WrittenRecords);
+        Assert.AreEqual(0L, captured.FailedBatches);
+    }
+
+    [TestMethod]
+    public async Task ExactlyMaximumDataFrameLengthIsAcceptedAndNextByteIsRejected()
+    {
+        const int maximum = 96 * 1024;
+        using var stream = new MemoryStream();
+        await using var sink = new DnstapSink(stream);
+        var boundary = Record();
+        var size = maximum - boundary.CalculateSize() - 4;
+        boundary.Message.QueryMessage = Google.Protobuf.ByteString.CopyFrom(new byte[size]);
+        while (boundary.CalculateSize() != maximum)
+        {
+            size += maximum - boundary.CalculateSize();
+            boundary.Message.QueryMessage = Google.Protobuf.ByteString.CopyFrom(new byte[size]);
+        }
+
+        Assert.AreEqual(maximum, boundary.CalculateSize());
+        var oversized = boundary.Clone();
+        oversized.Message.QueryMessage = Google.Protobuf.ByteString.CopyFrom(new byte[size + 1]);
+        Assert.IsGreaterThan(maximum, oversized.CalculateSize());
+
+        await sink.EmitBatchAsync(new[] { Event(boundary), Event(oversized) });
+        Assert.AreEqual(1L, sink.WrittenRecords);
+        Assert.AreEqual(1L, sink.RejectedRecords);
+        Assert.AreEqual(0L, sink.FailedBatches);
+    }
+
+    [TestMethod]
+    public async Task FaultedStreamClassifiesInvalidAndUnrelatedEventsWithoutOvercountingDrops()
+    {
+        using var stream = new FailedOutputStream();
+        await using var sink = new DnstapSink(stream) { SuppressTransportExceptions = true };
+        var invalid = Record();
+        invalid.Message.Type = (global::Dnstap.Message.Types.Type)int.MaxValue;
+
+        await sink.EmitBatchAsync(new[] { Event(Record()), Event(invalid), Event("unrelated"), Event(Record()) });
+        Assert.AreEqual(2L, sink.DroppedRecords);
+        Assert.AreEqual(1L, sink.RejectedRecords);
+        Assert.AreEqual(1L, sink.IgnoredEvents);
+
+        await sink.EmitBatchAsync(new[] { Event(invalid), Event("unrelated"), Event(Record()) });
+        Assert.AreEqual(3L, sink.DroppedRecords);
+        Assert.AreEqual(2L, sink.RejectedRecords);
+        Assert.AreEqual(2L, sink.IgnoredEvents);
+        Assert.AreEqual(1L, sink.FailedBatches);
     }
 
     private sealed class FlushObservedStream : MemoryStream
@@ -227,11 +294,12 @@ public sealed class DnstapSinkTests
         Assert.AreEqual(3L, sink.DroppedRecords);
         Assert.AreEqual(1L, sink.FailedBatches);
         Assert.AreEqual(0L, sink.WrittenRecords);
-        Assert.AreEqual(0L, sink.IgnoredEvents);
+        Assert.AreEqual(1L, sink.IgnoredEvents);
 
         // A permanently faulted caller-supplied stream rejects subsequent batches.
         await sink.EmitBatchAsync(new[] { Event(Record()), Event("unrelated") });
         Assert.AreEqual(4L, sink.DroppedRecords);
+        Assert.AreEqual(2L, sink.IgnoredEvents);
         Assert.AreEqual(1L, sink.FailedBatches);
     }
 
@@ -297,7 +365,7 @@ public sealed class DnstapSinkTests
 
         await sink.EmitBatchAsync(new[] { Event(malformed), Event(Record()) });
 
-        Assert.AreEqual(1L, sink.IgnoredEvents);
+        Assert.AreEqual(1L, sink.RejectedRecords);
         Assert.AreEqual(1L, sink.WrittenRecords);
         Assert.AreEqual(0L, sink.FailedBatches);
     }
