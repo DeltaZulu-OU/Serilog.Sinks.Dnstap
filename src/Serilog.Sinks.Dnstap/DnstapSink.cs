@@ -201,118 +201,140 @@ public sealed class DnstapSink : IBatchedLogEventSink, IDisposable, IAsyncDispos
         try
         {
             ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
-            if (_faulted)
-            {
-                // A stream supplied directly by the caller cannot be reopened. A
-                // configured TCP destination can establish a new session without replay.
-                if (_tcpHost is null || DateTimeOffset.UtcNow < _reconnectAfter)
-                {
-                    CountDropped(batch);
-                    return;
-                }
+            if (!await PrepareSessionAsync(batch).ConfigureAwait(false))
+                return;
 
-                // A failed writer cannot resume its Frame Streams state. Release
-                // the old transport before initiating a fresh TCP handshake.
-                try
-                {
-                    if (_writer is not null)
-                        await _writer.DisposeAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    SelfLog.WriteLine("DNSTap failed to release old session: {0}", ex);
-                }
-                finally
-                {
-                    _writer = null;
-                    _started = false;
-                    _faulted = false;
-                }
-            }
-
-            // Materialize once so that a partial failure can account for unprocessed records.
+            // A failed write ends the batch; do not flush or replay its remaining events.
             var events = batch as IReadOnlyList<LogEvent> ?? batch.ToArray();
-            for (var i = 0; i < events.Count; i++)
-            {
-                var logEvent = events[i];
-                if (!DnstapEventProperty.TryGetRecord(logEvent, out var record))
-                {
-                    Interlocked.Increment(ref _ignoredEvents);
-                    continue;
-                }
-
-                // These are the exact pre-I/O validity conditions enforced by
-                // Dnstap.NET 0.2.0's WriteAsync with its default frame limit.
-                // Do not classify exceptions raised by a stream as harmless errors.
-                var candidate = record!;
-                if (!candidate.IsInitialized() ||
-                    !Enum.IsDefined(candidate.Type) ||
-                    !Enum.IsDefined(candidate.Message.Type) ||
-                    candidate.CalculateSize() is < 1 or > MaximumFrameDataLength)
-                {
-                    Interlocked.Increment(ref _rejectedRecords);
-                    continue;
-                }
-
-                try
-                {
-                    if (_writer is null)
-                    {
-                        _writer = await OpenTcpWriterAsync(_tcpHost!, _tcpPort,
-                            _connectionTimeout, _operationTimeout).ConfigureAwait(false);
-                    }
-
-                    if (!_started)
-                    {
-                        await _writer.StartAsync().ConfigureAwait(false);
-                        _started = true;
-                    }
-
-                    await _writer.WriteAsync(candidate).ConfigureAwait(false);
-                    Interlocked.Increment(ref _writtenRecords);
-                }
-                catch (Exception ex)
-                {
-                    _faulted = true;
-                    if (_tcpHost is not null)
-                        _reconnectAfter = DateTimeOffset.UtcNow.Add(_reconnectInterval);
-                    Interlocked.Increment(ref _failedBatches);
-                    Interlocked.Increment(ref _droppedRecords);
-                    for (var remaining = i + 1; remaining < events.Count; remaining++)
-                    {
-                        if (IsDnstapCandidate(events[remaining]))
-                            Interlocked.Increment(ref _droppedRecords);
-                    }
-
-                    SelfLog.WriteLine("DNSTap sink entered terminal failure after {0} locally written records: {1}",
-                        WrittenRecords, ex);
-                    if (!SuppressTransportExceptions)
-                        throw;
-                    return;
-                }
-            }
-
-            // Flush through the writer so buffering remains synchronized with DATA and STOP.
-            // This does not provide an fsync guarantee or append a STOP frame.
-            if (_flushFileBatches && _started)
-            {
-                try
-                {
-                    await _writer!.FlushAsync().ConfigureAwait(false);
-                }
-                catch (Exception ex)
-                {
-                    _faulted = true;
-                    Interlocked.Increment(ref _failedBatches);
-                    SelfLog.WriteLine("DNSTap file batch flush failed: {0}", ex);
-                    if (!SuppressTransportExceptions)
-                        throw;
-                }
-            }
+            if (await EmitRecordsAsync(events).ConfigureAwait(false))
+                await FlushFileBatchAsync().ConfigureAwait(false);
         }
         finally
         {
             _gate.Release();
+        }
+    }
+
+    // Called under _gate. Reopening is only possible for a configured TCP destination.
+    private async Task<bool> PrepareSessionAsync(IReadOnlyCollection<LogEvent> batch)
+    {
+        if (!_faulted)
+            return true;
+
+        if (_tcpHost is null || DateTimeOffset.UtcNow < _reconnectAfter)
+        {
+            CountDropped(batch);
+            return false;
+        }
+
+        try
+        {
+            if (_writer is not null)
+                await _writer.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            SelfLog.WriteLine("DNSTap failed to release old session: {0}", ex);
+        }
+        finally
+        {
+            _writer = null;
+            _started = false;
+            _faulted = false;
+        }
+
+        return true;
+    }
+
+    private async Task<bool> EmitRecordsAsync(IReadOnlyList<LogEvent> events)
+    {
+        for (var i = 0; i < events.Count; i++)
+        {
+            if (!DnstapEventProperty.TryGetRecord(events[i], out var record))
+            {
+                Interlocked.Increment(ref _ignoredEvents);
+                continue;
+            }
+
+            if (!IsValidRecord(record!))
+            {
+                Interlocked.Increment(ref _rejectedRecords);
+                continue;
+            }
+
+            try
+            {
+                await WriteRecordAsync(record!).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                RecordWriteFailure(events, i, ex);
+                if (!SuppressTransportExceptions)
+                    throw;
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // Keep pre-I/O checks separate from transport exceptions: invalid records are not faults.
+    private static bool IsValidRecord(global::Dnstap.Dnstap record) =>
+        record.IsInitialized() &&
+        Enum.IsDefined(record.Type) &&
+        Enum.IsDefined(record.Message.Type) &&
+        record.CalculateSize() is >= 1 and <= MaximumFrameDataLength;
+
+    private async Task WriteRecordAsync(global::Dnstap.Dnstap record)
+    {
+        _writer ??= await OpenTcpWriterAsync(_tcpHost!, _tcpPort,
+            _connectionTimeout, _operationTimeout).ConfigureAwait(false);
+
+        if (!_started)
+        {
+            await _writer.StartAsync().ConfigureAwait(false);
+            _started = true;
+        }
+
+        await _writer.WriteAsync(record).ConfigureAwait(false);
+        Interlocked.Increment(ref _writtenRecords);
+    }
+
+    private void RecordWriteFailure(IReadOnlyList<LogEvent> events, int failedIndex, Exception ex)
+    {
+        _faulted = true;
+        if (_tcpHost is not null)
+            _reconnectAfter = DateTimeOffset.UtcNow.Add(_reconnectInterval);
+
+        Interlocked.Increment(ref _failedBatches);
+        Interlocked.Increment(ref _droppedRecords);
+        for (var i = failedIndex + 1; i < events.Count; i++)
+        {
+            if (IsDnstapCandidate(events[i]))
+                Interlocked.Increment(ref _droppedRecords);
+        }
+
+        SelfLog.WriteLine("DNSTap sink entered terminal failure after {0} locally written records: {1}",
+            WrittenRecords, ex);
+    }
+
+    // Flushing the writer keeps file DATA and STOP synchronized, but is not an fsync.
+    private async Task FlushFileBatchAsync()
+    {
+        if (!_flushFileBatches || !_started)
+            return;
+
+        try
+        {
+            await _writer!.FlushAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            _faulted = true;
+            Interlocked.Increment(ref _failedBatches);
+            SelfLog.WriteLine("DNSTap file batch flush failed: {0}", ex);
+            if (!SuppressTransportExceptions)
+                throw;
         }
     }
 

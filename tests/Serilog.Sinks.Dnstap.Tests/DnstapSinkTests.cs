@@ -212,6 +212,29 @@ public sealed class DnstapSinkTests
         await sink.DisposeAsync();
     }
 
+    [TestMethod]
+    public async Task FailedWriteAccountsForRemainingRecordsWithoutReplayingThem()
+    {
+        using var stream = new FailedOutputStream();
+        await using var sink = new DnstapSink(stream) { SuppressTransportExceptions = true };
+
+        // A failed write drops that record and any remaining DNS candidates.
+        // An unrelated trailing event must not be misclassified as a lost record.
+        await sink.EmitBatchAsync(new[]
+        {
+            Event(Record()), Event(Record()), Event("unrelated"), Event(Record())
+        });
+        Assert.AreEqual(3L, sink.DroppedRecords);
+        Assert.AreEqual(1L, sink.FailedBatches);
+        Assert.AreEqual(0L, sink.WrittenRecords);
+        Assert.AreEqual(0L, sink.IgnoredEvents);
+
+        // A permanently faulted caller-supplied stream rejects subsequent batches.
+        await sink.EmitBatchAsync(new[] { Event(Record()), Event("unrelated") });
+        Assert.AreEqual(4L, sink.DroppedRecords);
+        Assert.AreEqual(1L, sink.FailedBatches);
+    }
+
     private sealed class FailingCompletionStream : MemoryStream
     {
         public bool FailWrites { get; set; }
